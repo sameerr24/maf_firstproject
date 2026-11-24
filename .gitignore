@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+.pytest_cache/
+
+# Local secrets
+.env
+.env.*
+!.env.example
+
+# Generated per environment (contains database host/user)
+data/database_validation_report.md

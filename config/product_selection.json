@@ -1,0 +1,600 @@
+{
+  "_comment": "Curated product-selection rules. Edit this file (not the scripts) to change which SKUs are selected. See README.md -> 'Modifying product selections'.",
+  "source_csv": "BigBasket.csv",
+  "max_products": 20,
+  "allow_duplicate_product_types": false,
+  "global_exclusions": {
+    "_comment": "Rows matching these are never auto-selected (multi-product combos / bundles).",
+    "pack_size_patterns": [
+      "^combo$"
+    ],
+    "name_patterns": [
+      "\\bcombo\\b",
+      "\\s\\+\\s",
+      "\\d\\s?(g|kg|ml)\\s?\\+"
+    ]
+  },
+  "brand_aliases": {
+    "_comment": "Map raw Brand values to a cleaned brand name. Keys are matched case-insensitively after whitespace cleanup.",
+    "Head & shoulders": "Head & Shoulders",
+    "Closeup": "Close Up",
+    "MAGGI": "Maggi",
+    "Red Label": "Brooke Bond Red Label"
+  },
+  "display_name_overrides": {
+    "_comment": "Optional: SKU id -> clean display name. Keyed by SKU so a stale name is never applied to a different product. The original name is always kept in original_product_name.",
+    "40072320": "Farm Eggs - Table Tray, Medium",
+    "40003162": "Farm Fresh Curd/Dahi",
+    "10000415": "Sona Masoori Raw Rice",
+    "126903": "Atta - Whole Wheat",
+    "274145": "Sun Lite Sunflower Refined Oil",
+    "263642": "Tea Gold",
+    "292149": "Sunrise Instant Coffee - Chicory Mix",
+    "266162": "2-Minute Instant Masala Noodles",
+    "20005547": "Strong Teeth Toothpaste",
+    "100008548": "Original Bathing Bar Soap",
+    "40226539": "Dishwashing Liquid - Pomegranate"
+  },
+  "targets": [
+    {
+      "product_type": "milk",
+      "label": "Milk",
+      "consumption_pattern": "daily_perishable",
+      "replenishable": true,
+      "manual_sku_id": null,
+      "match": {
+        "subcategories": [
+          "Milk"
+        ],
+        "name_include_any": [
+          "\\bmilk\\b"
+        ],
+        "name_exclude_any": [
+          "shake",
+          "soya",
+          "\\bsoy\\b",
+          "flavour"
+        ],
+        "preferred_brands": [
+          "Nandini"
+        ],
+        "preferred_name_patterns": [
+          "toned milk"
+        ],
+        "preferred_pack_sizes": [
+          "500 ml",
+          "1 L"
+        ]
+      }
+    },
+    {
+      "product_type": "bread",
+      "label": "Bread",
+      "consumption_pattern": "daily_perishable",
+      "replenishable": true,
+      "manual_sku_id": null,
+      "match": {
+        "categories": [
+          "Bakery, Cakes & Dairy"
+        ],
+        "name_include_any": [
+          "\\bbread\\b"
+        ],
+        "name_exclude_any": [
+          "stick",
+          "crumb",
+          "short ?bread",
+          "yeast",
+          "chips",
+          "lavash",
+          "garlic"
+        ],
+        "preferred_pack_sizes": [
+          "400 g",
+          "350 g"
+        ]
+      },
+      "fallback": {
+        "reason": "The catalogue has no sliced/loaf bread SKU (only bread sticks, bread chips, a frozen garlic baguette, frozen parathas/naan and yeast). Milk rusk is the closest everyday bakery staple bought alongside tea. NOTE: rusk has a much longer shelf life than bread, so it does NOT reproduce bread's 2-3 day replenishment cycle. Set 'fallback' to null to drop this type instead.",
+        "match": {
+          "subcategories": [
+            "Rusks"
+          ],
+          "name_include_any": [
+            "rusk"
+          ],
+          "name_exclude_any": [
+            "cake rusk"
+          ],
+          "preferred_brands": [
+            "Elite",
+            "Tasties"
+          ],
+          "preferred_name_patterns": [
+            "milk"
+          ],
+          "preferred_pack_sizes": [
+            "200 g",
+            "300 g"
+          ]
+        }
+      }
+    },
+    {
+      "product_type": "eggs",
+      "label": "Eggs",
+      "consumption_pattern": "daily_perishable",
+      "replenishable": true,
+      "manual_sku_id": null,
+      "match": {
+        "subcategories": [
+          "Farm Eggs"
+        ],
+        "name_include_any": [
+          "\\beggs?\\b"
+        ],
+        "preferred_brands": [
+          "Fresho"
+        ],
+        "preferred_name_patterns": [
+          "table tray"
+        ],
+        "preferred_pack_sizes": [
+          "12 pcs",
+          "6 pcs"
+        ]
+      }
+    },
+    {
+      "product_type": "butter",
+      "label": "Butter",
+      "consumption_pattern": "chilled_dairy",
+      "replenishable": true,
+      "manual_sku_id": null,
+      "match": {
+        "subcategories": [
+          "Butter & Margarine"
+        ],
+        "name_include_any": [
+          "butter"
+        ],
+        "name_exclude_any": [
+          "organic"
+        ],
+        "preferred_brands": [
+          "Amul",
+          "Fresho"
+        ],
+        "preferred_pack_sizes": [
+          "100 g",
+          "500 g"
+        ]
+      }
+    },
+    {
+      "product_type": "curd",
+      "label": "Curd",
+      "consumption_pattern": "daily_perishable",
+      "replenishable": true,
+      "manual_sku_id": null,
+      "match": {
+        "subcategories": [
+          "Curd"
+        ],
+        "name_include_any": [
+          "curd"
+        ],
+        "preferred_brands": [
+          "Milky Mist",
+          "Heritage"
+        ],
+        "preferred_pack_sizes": [
+          "500 g",
+          "400 g"
+        ]
+      }
+    },
+    {
+      "product_type": "rice",
+      "label": "Rice",
+      "consumption_pattern": "monthly_staple",
+      "replenishable": true,
+      "manual_sku_id": null,
+      "match": {
+        "subcategories": [
+          "Raw Rice",
+          "Basmati Rice",
+          "Boiled & Steam Rice"
+        ],
+        "name_include_any": [
+          "\\brice\\b"
+        ],
+        "name_exclude_any": [
+          "idli",
+          "dosa",
+          "flakes",
+          "flour"
+        ],
+        "preferred_brands": [
+          "BB Royal",
+          "Daawat"
+        ],
+        "preferred_name_patterns": [
+          "sona masoori"
+        ],
+        "preferred_pack_sizes": [
+          "5 kg",
+          "1 kg"
+        ]
+      }
+    },
+    {
+      "product_type": "atta",
+      "label": "Atta (whole-wheat flour)",
+      "consumption_pattern": "monthly_staple",
+      "replenishable": true,
+      "manual_sku_id": null,
+      "match": {
+        "subcategories": [
+          "Atta Whole Wheat"
+        ],
+        "name_include_any": [
+          "atta"
+        ],
+        "name_exclude_any": [
+          "multigrain",
+          "millet"
+        ],
+        "preferred_brands": [
+          "Aashirvaad",
+          "BB Royal"
+        ],
+        "preferred_pack_sizes": [
+          "5 kg",
+          "2 kg"
+        ]
+      }
+    },
+    {
+      "product_type": "cooking_oil",
+      "label": "Cooking oil",
+      "consumption_pattern": "monthly_staple",
+      "replenishable": true,
+      "manual_sku_id": null,
+      "match": {
+        "subcategories": [
+          "Sunflower, Rice Bran Oil",
+          "Blended Cooking Oils"
+        ],
+        "name_include_any": [
+          "\\boil\\b"
+        ],
+        "preferred_brands": [
+          "Fortune",
+          "Saffola"
+        ],
+        "preferred_pack_sizes": [
+          "1 L"
+        ]
+      }
+    },
+    {
+      "product_type": "tea",
+      "label": "Tea",
+      "consumption_pattern": "monthly_staple",
+      "replenishable": true,
+      "manual_sku_id": null,
+      "match": {
+        "subcategories": [
+          "Leaf & Dust Tea"
+        ],
+        "name_include_any": [
+          "\\btea\\b"
+        ],
+        "name_exclude_any": [
+          "green",
+          "matcha",
+          "herbal"
+        ],
+        "preferred_brands": [
+          "Tata Tea Gold",
+          "Red Label"
+        ],
+        "preferred_pack_sizes": [
+          "250 g",
+          "500 g"
+        ]
+      }
+    },
+    {
+      "product_type": "coffee",
+      "label": "Coffee",
+      "consumption_pattern": "monthly_staple",
+      "replenishable": true,
+      "manual_sku_id": null,
+      "match": {
+        "subcategories": [
+          "Instant Coffee",
+          "Ground Coffee"
+        ],
+        "name_include_any": [
+          "coffee",
+          "sunrise"
+        ],
+        "preferred_brands": [
+          "Nescafe",
+          "Tata Coffee"
+        ],
+        "preferred_pack_sizes": [
+          "100 g",
+          "200 g"
+        ]
+      }
+    },
+    {
+      "product_type": "biscuits",
+      "label": "Biscuits",
+      "consumption_pattern": "pantry_snack",
+      "replenishable": true,
+      "manual_sku_id": null,
+      "match": {
+        "subcategories": [
+          "Glucose & Milk Biscuits",
+          "Marie, Health, Digestive",
+          "Cookies",
+          "Cream Biscuits & Wafers"
+        ],
+        "name_include_any": [
+          "biscuit",
+          "cookie"
+        ],
+        "preferred_brands": [
+          "Britannia",
+          "Sunfeast"
+        ],
+        "preferred_pack_sizes": [
+          "400 g",
+          "300 g"
+        ]
+      }
+    },
+    {
+      "product_type": "instant_noodles",
+      "label": "Instant noodles",
+      "consumption_pattern": "pantry_snack",
+      "replenishable": true,
+      "manual_sku_id": null,
+      "match": {
+        "subcategories": [
+          "Instant Noodles"
+        ],
+        "name_include_any": [
+          "noodle"
+        ],
+        "preferred_brands": [
+          "Maggi",
+          "Top Ramen"
+        ],
+        "preferred_name_patterns": [
+          "masala"
+        ],
+        "preferred_pack_sizes": [
+          "280 g",
+          "70 g"
+        ]
+      }
+    },
+    {
+      "product_type": "shampoo",
+      "label": "Shampoo",
+      "consumption_pattern": "personal_care",
+      "replenishable": true,
+      "manual_sku_id": null,
+      "match": {
+        "subcategories": [
+          "Shampoo & Conditioner"
+        ],
+        "name_include_any": [
+          "shampoo"
+        ],
+        "name_exclude_any": [
+          "conditioner",
+          "kids",
+          "baby"
+        ],
+        "preferred_brands": [
+          "Dove",
+          "Clinic Plus",
+          "Head & Shoulders"
+        ],
+        "preferred_name_patterns": [
+          "^daily shine shampoo$"
+        ],
+        "preferred_pack_sizes": [
+          "340 ml",
+          "180 ml"
+        ]
+      }
+    },
+    {
+      "product_type": "toothpaste",
+      "label": "Toothpaste",
+      "consumption_pattern": "personal_care",
+      "replenishable": true,
+      "manual_sku_id": null,
+      "match": {
+        "subcategories": [
+          "Toothpaste"
+        ],
+        "name_include_any": [
+          "toothpaste",
+          "strong teeth"
+        ],
+        "name_exclude_any": [
+          "saver",
+          "kids"
+        ],
+        "preferred_brands": [
+          "Colgate",
+          "Close Up"
+        ],
+        "preferred_name_patterns": [
+          "strong teeth"
+        ],
+        "preferred_pack_sizes": [
+          "150 g",
+          "100 g"
+        ]
+      }
+    },
+    {
+      "product_type": "bathing_soap",
+      "label": "Bathing soap",
+      "consumption_pattern": "personal_care",
+      "replenishable": true,
+      "manual_sku_id": null,
+      "match": {
+        "subcategories": [
+          "Bathing Bars & Soaps"
+        ],
+        "name_include_any": [
+          "soap",
+          "bathing bar"
+        ],
+        "preferred_brands": [
+          "Dettol",
+          "Santoor"
+        ],
+        "preferred_name_patterns": [
+          "original"
+        ],
+        "preferred_pack_sizes": [
+          "125 g",
+          "75 g"
+        ]
+      }
+    },
+    {
+      "product_type": "detergent",
+      "label": "Laundry detergent",
+      "consumption_pattern": "household_cleaning",
+      "replenishable": true,
+      "manual_sku_id": null,
+      "match": {
+        "subcategories": [
+          "Detergent Powder, Liquid"
+        ],
+        "name_include_any": [
+          "detergent"
+        ],
+        "name_exclude_any": [
+          "dish"
+        ],
+        "preferred_brands": [
+          "Surf Excel",
+          "Ariel"
+        ],
+        "preferred_pack_sizes": [
+          "1 kg"
+        ]
+      }
+    },
+    {
+      "product_type": "dishwashing",
+      "label": "Dishwashing product",
+      "consumption_pattern": "household_cleaning",
+      "replenishable": true,
+      "manual_sku_id": null,
+      "match": {
+        "subcategories": [
+          "Dishwash Liquids & Pastes",
+          "Dishwash Bars & Powders"
+        ],
+        "name_include_any": [
+          "dish ?wash"
+        ],
+        "name_exclude_any": [
+          "dishwasher tablet"
+        ],
+        "preferred_brands": [
+          "Fairy",
+          "Wild Ideas"
+        ],
+        "preferred_pack_sizes": [
+          "450 ml",
+          "500 ml",
+          "500 g"
+        ]
+      }
+    },
+    {
+      "product_type": "onion",
+      "label": "Onion",
+      "consumption_pattern": "fresh_produce",
+      "replenishable": true,
+      "manual_sku_id": null,
+      "match": {
+        "subcategories": [
+          "Potato, Onion & Tomato"
+        ],
+        "name_include_any": [
+          "^onion"
+        ],
+        "preferred_brands": [
+          "Fresho"
+        ],
+        "preferred_pack_sizes": [
+          "1 kg",
+          "2 kg"
+        ]
+      }
+    },
+    {
+      "product_type": "potato",
+      "label": "Potato",
+      "consumption_pattern": "fresh_produce",
+      "replenishable": true,
+      "manual_sku_id": null,
+      "match": {
+        "subcategories": [
+          "Potato, Onion & Tomato"
+        ],
+        "name_include_any": [
+          "^potato"
+        ],
+        "preferred_brands": [
+          "Fresho"
+        ],
+        "preferred_pack_sizes": [
+          "1 kg",
+          "2 kg"
+        ]
+      }
+    },
+    {
+      "product_type": "tomato",
+      "label": "Tomato",
+      "consumption_pattern": "fresh_produce",
+      "replenishable": true,
+      "manual_sku_id": null,
+      "match": {
+        "subcategories": [
+          "Potato, Onion & Tomato"
+        ],
+        "name_include_any": [
+          "^tomato"
+        ],
+        "preferred_brands": [
+          "Fresho"
+        ],
+        "preferred_name_patterns": [
+          "hybrid"
+        ],
+        "preferred_pack_sizes": [
+          "1 kg",
+          "500 g"
+        ]
+      }
+    }
+  ]
+}

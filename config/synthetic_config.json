@@ -1,0 +1,58 @@
+{
+  "_comment": "Configuration for scripts/generate_synthetic_transactions.py. All behaviour is keyed by product_type; product IDs are read from the processed catalogue, never hardcoded here.",
+  "seed": 20261124,
+  "catalogue_csv": "data/processed/selected_products.csv",
+  "output_dir": "data/synthetic",
+  "n_customers": 100,
+  "history_days": 180,
+  "history_end_date": "2026-11-15",
+  "max_quantity_per_line": 30,
+
+  "product_profiles": {
+    "_comment": "base_interval_days: typical days between purchase occasions for a 3-person household buying the normal amount. base_quantity: units (packs) bought per occasion at that interval. interval_cv: randomness of gaps (lognormal sigma). adoption: relative likelihood a customer buys this product at all.",
+    "milk":            {"base_interval_days": 2,  "base_quantity": 2, "interval_cv": 0.25, "adoption": 0.85},
+    "curd":            {"base_interval_days": 4,  "base_quantity": 1, "interval_cv": 0.30, "adoption": 0.60},
+    "bread":           {"base_interval_days": 4,  "base_quantity": 1, "interval_cv": 0.35, "adoption": 0.45},
+    "eggs":            {"base_interval_days": 6,  "base_quantity": 1, "interval_cv": 0.30, "adoption": 0.55},
+    "butter":          {"base_interval_days": 12, "base_quantity": 1, "interval_cv": 0.35, "adoption": 0.40},
+    "onion":           {"base_interval_days": 5,  "base_quantity": 1, "interval_cv": 0.30, "adoption": 0.75},
+    "potato":          {"base_interval_days": 6,  "base_quantity": 1, "interval_cv": 0.30, "adoption": 0.70},
+    "tomato":          {"base_interval_days": 4,  "base_quantity": 1, "interval_cv": 0.30, "adoption": 0.75},
+    "rice":            {"base_interval_days": 30, "base_quantity": 1, "interval_cv": 0.20, "adoption": 0.60},
+    "atta":            {"base_interval_days": 25, "base_quantity": 1, "interval_cv": 0.20, "adoption": 0.55},
+    "cooking_oil":     {"base_interval_days": 20, "base_quantity": 1, "interval_cv": 0.20, "adoption": 0.65},
+    "tea":             {"base_interval_days": 20, "base_quantity": 1, "interval_cv": 0.25, "adoption": 0.60},
+    "coffee":          {"base_interval_days": 25, "base_quantity": 1, "interval_cv": 0.25, "adoption": 0.35},
+    "biscuits":        {"base_interval_days": 10, "base_quantity": 1, "interval_cv": 0.55, "adoption": 0.50},
+    "instant_noodles": {"base_interval_days": 12, "base_quantity": 1, "interval_cv": 0.55, "adoption": 0.45},
+    "shampoo":         {"base_interval_days": 40, "base_quantity": 1, "interval_cv": 0.20, "adoption": 0.45},
+    "toothpaste":      {"base_interval_days": 30, "base_quantity": 1, "interval_cv": 0.20, "adoption": 0.60},
+    "bathing_soap":    {"base_interval_days": 20, "base_quantity": 2, "interval_cv": 0.25, "adoption": 0.55},
+    "detergent":       {"base_interval_days": 35, "base_quantity": 1, "interval_cv": 0.25, "adoption": 0.50},
+    "dishwashing":     {"base_interval_days": 30, "base_quantity": 1, "interval_cv": 0.25, "adoption": 0.45}
+  },
+
+  "segments": {
+    "_comment": "count: customers in this segment (must sum to n_customers). interval_multiplier: scales each product's interval (quantity scales with it so consumption stays plausible). min_interval_days: floor on gaps. extra_interval_cv: added randomness. skip_probability: chance a purchase occasion is missed (gap doubles). order_window_days: purchases within this many days are merged into one order. weekly_snap: snap orders to the customer's preferred weekday.",
+    "regular":             {"count": 20, "products": [9, 15], "interval_multiplier": 1.0, "min_interval_days": 1, "extra_interval_cv": 0.05, "skip_probability": 0.03, "order_window_days": 1, "weekly_snap": false},
+    "weekly":              {"count": 18, "products": [8, 14], "interval_multiplier": 1.0, "min_interval_days": 7, "extra_interval_cv": 0.05, "skip_probability": 0.05, "order_window_days": 0, "weekly_snap": true},
+    "bulk":                {"count": 12, "products": [6, 12], "interval_multiplier": 2.5, "min_interval_days": 6, "extra_interval_cv": 0.10, "skip_probability": 0.05, "order_window_days": 4, "weekly_snap": false},
+    "irregular":           {"count": 15, "products": [4, 11], "interval_multiplier": 1.6, "min_interval_days": 2, "extra_interval_cv": 0.45, "skip_probability": 0.30, "order_window_days": 1, "weekly_snap": false},
+    "new":                 {"count": 12, "products": [3, 9],  "interval_multiplier": 1.0, "min_interval_days": 1, "extra_interval_cv": 0.10, "skip_probability": 0.05, "order_window_days": 1, "weekly_snap": false,
+                            "signup_days_before_end": [7, 45]},
+    "lapsed":              {"count": 10, "products": [6, 12], "interval_multiplier": 1.0, "min_interval_days": 1, "extra_interval_cv": 0.10, "skip_probability": 0.05, "order_window_days": 1, "weekly_snap": false,
+                            "churn_days_before_end": [30, 80]},
+    "basket_consolidator": {"count": 13, "products": [8, 16], "interval_multiplier": 1.4, "min_interval_days": 3, "extra_interval_cv": 0.10, "skip_probability": 0.05, "order_window_days": 5, "weekly_snap": false}
+  },
+
+  "irregularities": {
+    "_comment": "Per (customer, product) and per-customer events that make histories imperfect.",
+    "product_dropout_probability": 0.08,
+    "late_adoption_probability": 0.08,
+    "vacation_probability": 0.25,
+    "vacation_length_days": [6, 16],
+    "personal_interval_sigma": 0.20,
+    "quantity_sigma": 0.25,
+    "household_size_weights": {"1": 0.15, "2": 0.25, "3": 0.25, "4": 0.22, "5": 0.13}
+  }
+}
