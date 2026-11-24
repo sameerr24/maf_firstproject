@@ -1,4 +1,6 @@
-# Smart Reorder & Subscription Shopping: Recommendation System
+# maf_firstproject
+
+## Smart Reorder & Subscription Shopping: Recommendation System
 
 This repository holds the recommendation-system part of the *Smart Reorder &
 Subscription Shopping* internship project. The product will recommend *when* a
