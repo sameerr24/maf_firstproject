@@ -247,3 +247,30 @@ def test_validation_warning_only_exit_codes(loaded, sources):
     assert any("unit_price differs" in c.name for c in warn)
     assert vdb.exit_code([c for c in checks if c.category != "content"]) == 0
     assert vdb.exit_code([c for c in checks if c.category != "content"], strict=True) == 1
+
+
+# ------------------------------------------------------------------ app-managed columns
+def test_replace_refuses_when_app_data_exists(loaded, sources):
+    with loaded.begin() as conn:
+        conn.execute(text("UPDATE customers SET customer_name = 'Test' WHERE customer_id = "
+                          "(SELECT min(customer_id) FROM customers)"))
+    with pytest.raises(load_data.LoadError, match="App-managed data would be wiped"):
+        load_data.load_all(loaded, sources, replace=True, log=lambda *_: None)
+    with loaded.connect() as conn:  # rolled back: the name is still there
+        assert conn.execute(text("SELECT count(customer_name) FROM customers")).scalar_one() == 1
+
+
+def test_validation_ignores_app_columns_and_subscription_orders(loaded, sources):
+    with loaded.begin() as conn:
+        cid = conn.execute(text("SELECT min(customer_id) FROM customers")).scalar_one()
+        pid, ptype, price = conn.execute(text("SELECT product_id, product_type, discount_price FROM products LIMIT 1")).one()
+        conn.execute(text("UPDATE customers SET customer_name = 'Test', phone_e164 = '+447700900001' "
+                          "WHERE customer_id = :c"), {"c": cid})
+        conn.execute(text("UPDATE orders SET delivery_slot = '07:00-09:00'"))
+        conn.execute(text("INSERT INTO orders (order_id, customer_id, order_date, order_datetime, item_count, "
+                          "unit_count, order_total, source) VALUES ('SUB-1', :c, '2026-12-01', '2026-12-01 08:00', "
+                          "1, 2, :t, 'subscription')"), {"c": cid, "t": price * 2})
+        conn.execute(text("INSERT INTO order_items VALUES ('SUBI-1', 'SUB-1', :p, :pt, 2, :u, :t)"),
+                     {"p": pid, "pt": ptype, "u": price, "t": price * 2})
+    checks = vdb.run_checks(loaded, sources)
+    assert [c for c in checks if c.status == vdb.FAIL] == []

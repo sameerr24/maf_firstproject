@@ -1,6 +1,9 @@
 """SQLAlchemy 2.0 ORM models for the five project datasets.
 
-Every column maps 1:1 to a column in the source CSVs (no invented attributes):
+Every column maps 1:1 to a column in the source CSVs, except the few columns marked
+``info={"source": "app"}``. Those were added by the subscriptions migration and are
+written by the Flask app, not by the CSV loader. Use ``csv_columns()`` wherever code
+must line up with a CSV header.
 
     products                   <- data/processed/selected_products.csv
     customers                  <- data/synthetic/customers.csv
@@ -18,13 +21,29 @@ import datetime as dt
 from decimal import Decimal
 
 from sqlalchemy import (
-    BigInteger, Boolean, CheckConstraint, Date, DateTime, ForeignKey, ForeignKeyConstraint,
-    Index, Integer, MetaData, Numeric, SmallInteger, String, Text, UniqueConstraint,
+    BigInteger, Boolean, CheckConstraint, Column, Date, DateTime, ForeignKey, ForeignKeyConstraint,
+    Index, Integer, MetaData, Numeric, SmallInteger, String, Table, Text, UniqueConstraint, false, text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 SELECTION_METHODS = ("auto", "manual_override", "fallback")
+ORDER_SOURCES = ("manual", "subscription")
+E164_REGEX = r"^\+[1-9][0-9]{7,14}$"
+
+# Columns owned by the Flask app (subscriptions migration), not present in the CSVs.
+# They must be nullable or have a server default so CSV loads still work.
+APP_COLUMN = {"source": "app"}
+
+
+def csv_columns(table: Table) -> list[Column]:
+    """Columns that come from the source CSV, in table order."""
+    return [c for c in table.columns if c.info.get("source") != "app"]
+
+
+def app_columns(table: Table) -> list[Column]:
+    """Columns written by the Flask app (not by the CSV loader)."""
+    return [c for c in table.columns if c.info.get("source") == "app"]
 
 
 def _in(col: str, values) -> str:
@@ -90,6 +109,10 @@ class Customer(Base):
     behaviour_segment: Mapped[str] = mapped_column(String(30), nullable=False)
     household_size: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     preferred_weekday: Mapped[str] = mapped_column(String(3), nullable=False)
+    # App-managed (subscriptions migration):
+    customer_name: Mapped[str | None] = mapped_column(String, info=APP_COLUMN)
+    phone_e164: Mapped[str | None] = mapped_column(String, info=APP_COLUMN)
+    whatsapp_opt_in: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=false(), info=APP_COLUMN)
 
     orders: Mapped[list[Order]] = relationship(back_populates="customer")
     profiles: Mapped[list[CustomerProductProfile]] = relationship(back_populates="customer")
@@ -97,6 +120,8 @@ class Customer(Base):
     __table_args__ = (
         CheckConstraint("household_size > 0", name="ck_customers_household_size"),
         CheckConstraint(_in("preferred_weekday", WEEKDAYS), name="ck_customers_weekday"),
+        UniqueConstraint("phone_e164", name="customers_phone_e164_key"),
+        CheckConstraint(f"phone_e164 IS NULL OR phone_e164 ~ '{E164_REGEX}'", name="customers_phone_e164_check"),
     )
 
 
@@ -111,6 +136,9 @@ class Order(Base):
     item_count: Mapped[int] = mapped_column(Integer, nullable=False)
     unit_count: Mapped[int] = mapped_column(Integer, nullable=False)
     order_total: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    # App-managed (subscriptions migration). CSV orders are all 'manual'.
+    source: Mapped[str] = mapped_column(String, nullable=False, server_default=text("'manual'"), info=APP_COLUMN)
+    delivery_slot: Mapped[str | None] = mapped_column(String, info=APP_COLUMN)
 
     customer: Mapped[Customer] = relationship(back_populates="orders")
     items: Mapped[list[OrderItem]] = relationship(back_populates="order")
@@ -120,6 +148,7 @@ class Order(Base):
         CheckConstraint("unit_count >= item_count", name="ck_orders_unit_count"),
         CheckConstraint("order_total >= 0", name="ck_orders_total"),
         CheckConstraint("CAST(order_datetime AS DATE) = order_date", name="ck_orders_date_matches_datetime"),
+        CheckConstraint(_in("source", ORDER_SOURCES), name="orders_source_check"),
         # Purchase-history lookups: a customer's orders in date order.
         Index("ix_orders_customer_date", "customer_id", "order_date"),
         Index("ix_orders_order_date", "order_date"),

@@ -26,7 +26,7 @@ class WhatsAppMessage(SubscriptionsBase):
     direction: Mapped[str] = mapped_column(String, nullable=False)
     message_type: Mapped[str | None] = mapped_column(String)
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
-    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=False), nullable=False, server_default=func.now())
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
     occurrence: Mapped[DeliveryOccurrence | None] = relationship(DeliveryOccurrence)
     customer: Mapped[Customer | None] = relationship(Customer)

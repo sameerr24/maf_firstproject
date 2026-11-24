@@ -18,7 +18,7 @@ from sqlalchemy import BigInteger, Boolean, Date, DateTime, Integer, Numeric, Sm
 from sqlalchemy.orm import DeclarativeBase
 
 from database.connection import PROJECT_ROOT
-from database.models import LOAD_ORDER, Customer, CustomerProductProfile, Order, OrderItem, Product
+from database.models import LOAD_ORDER, Customer, CustomerProductProfile, Order, OrderItem, Product, csv_columns
 
 SOURCE_FILES: dict[type[DeclarativeBase], str] = {
     Product: "data/processed/selected_products.csv",
@@ -126,7 +126,7 @@ def read_table(model, path: Path, errors: list[str]) -> SourceTable | None:
         errors.append(f"{name}: could not read {path.name}: {e}")
         return None
 
-    expected = [c.name for c in model.__table__.columns]
+    expected = [c.name for c in csv_columns(model.__table__)]  # app-managed columns aren't in the CSV
     missing = [c for c in expected if c not in df.columns]
     extra = [c for c in df.columns if c not in expected]
     if missing:
@@ -139,7 +139,7 @@ def read_table(model, path: Path, errors: list[str]) -> SourceTable | None:
         errors.append(f"{name}: {path.name} has no rows")
         return None
 
-    cols = list(model.__table__.columns)
+    cols = csv_columns(model.__table__)
     records, bad = [], {}
     for i, row in enumerate(df.itertuples(index=False), start=2):  # line 1 is the header
         rec = {}
@@ -175,7 +175,10 @@ def check_uniqueness(t: SourceTable, errors: list[str]) -> None:
     for col in table.columns:
         if col.unique:
             groups.append((f"unique {col.name}", [col.name]))
+    csv_names = {c.name for c in csv_columns(table)}
     for label, cols in groups:
+        if not set(cols) <= csv_names:  # e.g. unique phone_e164: app-managed, not in the CSV
+            continue
         seen, dups = set(), []
         for k in _keys(t.records, cols):
             if k in seen:
