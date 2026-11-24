@@ -8,6 +8,7 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app import create_app
+from app.errors import Conflict, NotFound
 from app.models import DeliveryOccurrence, Inventory, Subscription, WhatsAppMessage
 from app.subscriptions import jobs
 from app.subscriptions import service as svc
@@ -218,3 +219,109 @@ def test_dev_endpoint(schema_engine, engine):
     r = c.post("/api/dev/run-scheduler?now=2026-11-27T09:00")       # no offset -> IST
     assert r.status_code == 200 and r.json["reminded"] == [sid] and r.json["today"] == "2026-11-27"
     app.extensions["db_engine"].dispose()
+
+
+# ------------------------------------------------------------------ delay (approve again)
+def remind_and_get_occurrence(engine, sid, now):
+    run(engine, now)
+    with Session(engine) as s:
+        return s.scalars(select(DeliveryOccurrence.occurrence_id).where(
+            DeliveryOccurrence.subscription_id == sid, DeliveryOccurrence.status == "NOTIFIED")).one()
+
+
+def delay(engine, customer, occ_id, days):
+    with Session(engine, expire_on_commit=False) as s:
+        occ = svc.delay_delivery(s, customer, occ_id, days, now=at(27, 10))
+        s.commit()
+        return occ
+
+
+@pytest.mark.parametrize("frequency,options", [(7, [1, 2]), (3, [1, 2]), (2, [1]), (1, [])])
+def test_delay_options_stay_before_next_cycle(frequency, options):
+    sub, occ = Subscription(frequency_days=frequency), DeliveryOccurrence(delay_days=None)
+    assert svc.delay_options(sub, occ) == options
+    occ.delay_days = 1
+    assert svc.delay_options(sub, occ) == [n for n in options if n == 1 and frequency > 2]
+
+
+def test_delay_moves_delivery_and_needs_approval_again(engine):
+    sid = subscribe(engine, frequency_days=7)
+    occ_id = remind_and_get_occurrence(engine, sid, at(27, 9))           # reminder for Sat 28 Nov
+    occ = delay(engine, ME, occ_id, 1)
+    assert (occ.status, occ.delay_days, occ.response_deadline) == ("DELAYED", 1, None)
+    assert svc.delivery_date(occ) == dt.date(2026, 11, 29)
+
+    assert run(engine, at(27, 22))["auto_skipped"] == []                   # no deadline while delayed
+    r = run(engine, at(28, 9))                                             # day before the new date
+    assert r["reminded"] == [sid]
+    status, next_date, occs, msgs = state(engine, sid)
+    assert occs == {dt.date(2026, 11, 28): ("NOTIFIED", None)}             # same cycle, asked again
+    assert msgs[-1]["template"] == "subscription_delivery_reminder" and msgs[-1]["params"]["date"] == "Sun, 29 Nov"
+    assert msgs[-1]["buttons"][0] == f"APPROVE:{occ_id}" and len(msgs) == 2
+    with Session(engine) as s:
+        assert s.get(DeliveryOccurrence, occ_id).response_deadline == at(28, 21)
+    assert next_date == dt.date(2026, 11, 28)                              # cycle not settled yet
+
+    r = run(engine, at(28, 21, 1))                                         # no reply again -> skipped
+    assert r["auto_skipped"] == [sid]
+    status, next_date, occs, msgs = state(engine, sid)
+    assert occs[dt.date(2026, 11, 28)] == ("SKIPPED", "NO_RESPONSE")
+    assert next_date == dt.date(2026, 12, 5)                               # original weekly cadence
+    assert msgs[-1]["params"]["date"] == "Sun, 29 Nov"
+
+
+def test_delay_rules(engine):
+    sid = subscribe(engine, frequency_days=7)
+    occ_id = remind_and_get_occurrence(engine, sid, at(27, 9))
+    with Session(engine) as s:
+        with pytest.raises(NotFound):
+            svc.delay_delivery(s, OTHER, occ_id, 1)                        # not your delivery
+    with Session(engine) as s:
+        with pytest.raises(Conflict) as e:
+            svc.delay_delivery(s, ME, occ_id, 3)
+        assert e.value.code == "delay_not_possible" and e.value.details["options"] == [1, 2]
+    delay(engine, ME, occ_id, 1)
+    with Session(engine) as s:
+        with pytest.raises(Conflict) as e:                                 # must be re-reminded first
+            svc.delay_delivery(s, ME, occ_id, 1)
+        assert e.value.code == "delivery_finalised"
+    run(engine, at(28, 9))                                                 # re-reminded (NOTIFIED again)
+    assert delay(engine, ME, occ_id, 1).delay_days == 2                    # total 2 days: allowed
+    run(engine, at(29, 9))
+    with Session(engine) as s, pytest.raises(Conflict):
+        svc.delay_delivery(s, ME, occ_id, 1)                               # would exceed the max
+
+
+def test_delayed_delivery_out_of_stock_at_new_reminder(engine):
+    sid = subscribe(engine, quantity=5, frequency_days=7)                  # MILK stock 5
+    occ_id = remind_and_get_occurrence(engine, sid, at(27, 9))
+    delay(engine, ME, occ_id, 2)
+    with Session(engine) as s:
+        s.get(Inventory, MILK).available_qty = 1
+        s.commit()
+    r = run(engine, at(29, 9))
+    assert r["out_of_stock"] == [sid]
+    _, next_date, occs, msgs = state(engine, sid)
+    assert occs == {dt.date(2026, 11, 28): ("OUT_OF_STOCK", "OUT_OF_STOCK")} and next_date == dt.date(2026, 12, 5)
+    assert msgs[-1]["template"] == "delivery_out_of_stock_notice" and msgs[-1]["params"]["date"] == "Mon, 30 Nov"
+
+
+def test_delayed_delivery_missed_when_scheduler_was_down(engine):
+    sid = subscribe(engine, frequency_days=7)
+    occ_id = remind_and_get_occurrence(engine, sid, at(27, 9))
+    delay(engine, ME, occ_id, 1)                                           # new date 29 Nov
+    r = run(engine, at(29, 12))
+    assert r["missed"] == [sid]
+    _, next_date, occs, _ = state(engine, sid)
+    assert occs == {dt.date(2026, 11, 28): ("SKIPPED", "NO_RESPONSE")} and next_date == dt.date(2026, 12, 5)
+
+
+def test_dashboard_skip_and_pause_handle_delayed(engine):
+    sid = subscribe(engine, frequency_days=7)
+    occ_id = remind_and_get_occurrence(engine, sid, at(27, 9))
+    delay(engine, ME, occ_id, 1)
+    with Session(engine) as s:
+        r = svc.skip_next_delivery(s, ME, sid, today=dt.date(2026, 11, 27))
+        s.commit()
+    assert r["skipped_date"] == "2026-11-28" and r["subscription"]["next_delivery_date"] == "2026-12-05"
+    assert state(engine, sid)[2][dt.date(2026, 11, 28)] == ("SKIPPED", "USER_SKIP")

@@ -458,6 +458,45 @@ def cancel_subscription(session: Session, customer_id: str, subscription_id: int
     return subscription_to_dict(sub)
 
 
+def delivery_date(occ: DeliveryOccurrence) -> dt.date:
+    """When this delivery actually happens: its cycle date plus any delay."""
+    return occ.scheduled_date + dt.timedelta(days=occ.delay_days or 0)
+
+
+def delay_options(sub: Subscription, occ: DeliveryOccurrence) -> list[int]:
+    """Delay choices (days) still possible for this delivery: the total delay stays within
+    MAX_TOTAL_DELAY_DAYS and strictly before the next cycle."""
+    used = occ.delay_days or 0
+    return [n for n in C.DELAY_OPTIONS_DAYS
+            if used + n <= C.MAX_TOTAL_DELAY_DAYS and used + n < sub.frequency_days]
+
+
+def delay_delivery(session: Session, customer_id: str, occurrence_id: int, days: int,
+                   now: dt.datetime | None = None) -> DeliveryOccurrence:
+    """Customer chose "Delay N days" on a reminder. The delivery moves by N days and goes back
+    to DELAYED: the scheduler sends a fresh reminder before the new date, which must be
+    approved again. The subscription's cycle is unchanged. Called by the WhatsApp flow."""
+    now = now or now_utc()
+    row = session.execute(select(DeliveryOccurrence.subscription_id).join(Subscription).where(
+        DeliveryOccurrence.occurrence_id == occurrence_id, Subscription.customer_id == customer_id)).first()
+    if row is None:
+        raise NotFound("Delivery not found")
+    sub = _get_owned(session, customer_id, row.subscription_id, lock=True)       # lock order: sub, then occ
+    occ = session.scalars(select(DeliveryOccurrence).where(DeliveryOccurrence.occurrence_id == occurrence_id)
+                          .with_for_update().execution_options(populate_existing=True)).one()
+    if sub.status != "ACTIVE" or occ.status != "NOTIFIED":
+        raise Conflict("This delivery can no longer be delayed", code="delivery_finalised")
+    if days not in delay_options(sub, occ):
+        raise Conflict(f"This delivery can't be delayed by {days} day(s)", code="delay_not_possible",
+                       details={"options": delay_options(sub, occ)})
+    occ.delay_days = (occ.delay_days or 0) + days
+    occ.status = "DELAYED"
+    occ.responded_at = now
+    occ.response_deadline = None
+    session.flush()
+    return occ
+
+
 def skip_next_delivery(session: Session, customer_id: str, subscription_id: int,
                        today: dt.date | None = None) -> dict[str, Any]:
     """Skip the upcoming delivery and move to the next cycle (from the dashboard; the

@@ -29,3 +29,10 @@ RESPONSE_DEADLINE_LOCAL_TIME = "21:00"
 # ...but always get at least this long to reply (late reminders, demo time travel).
 MIN_RESPONSE_WINDOW_MINUTES = 60
 SCHEDULER_INTERVAL_MINUTES = 5
+
+# "Delay" choices offered in WhatsApp after Skip. A delay moves this delivery only; the
+# customer is reminded again before the new date and must approve again (every charge is
+# approved). The total delay must stay below the subscription frequency so it can't run
+# into the next cycle.
+DELAY_OPTIONS_DAYS = (1, 2)
+MAX_TOTAL_DELAY_DAYS = 2

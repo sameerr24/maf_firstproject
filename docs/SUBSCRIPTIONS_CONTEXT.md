@@ -101,6 +101,12 @@ GET /api/products/:id · GET /api/subscriptions/draft?product_id=&rec_id= · GET
 - Product and draft responses include `whatsapp_ready`, so the UI can ask the customer to connect WhatsApp first.
 - If a customer opts out after subscribing, the scheduler skips each due delivery (`SKIPPED` / `NO_RESPONSE`) without messaging them. Deliveries resume once they opt back in.
 
+**Delay = approve again** (Shubham, 2026-11-24; the problem statement requires every charge to be approved)
+- "Delay N days" (N = 1 or 2) moves only this delivery. The occurrence keeps its cycle date (`scheduled_date`), gets `delay_days`, and becomes `DELAYED`. The delivery date is `scheduled_date + delay_days`.
+- The day before the new date, the scheduler sends a fresh reminder (`NOTIFIED` with a new deadline). No reply means auto-skip, as usual. Nothing is charged without an Approve.
+- The total delay is at most 2 days and always before the next cycle (no delay option for daily items). The next cycle stays on the original schedule.
+- On Approve, the order is for the delivery date, i.e. including the delay.
+
 ## Still open
 1. Recommendation output for the draft endpoint: endpoint or table, and its shape (recommendation_id, customer_id, product_id, recommended_quantity, recommended_frequency_days, score, rank, reason).
 2. Allowed quantity and frequency bounds; fallback when there's no recommendation.
