@@ -6,7 +6,7 @@ import pytest
 
 from app import create_app
 from app.auth_bridge import issue_token
-from subscription_db import ME, MILK, OTHER, TV, admin_engine, schema_engine  # noqa: F401
+from subscription_db import ME, MILK, NOWA, OTHER, TV, admin_engine, schema_engine  # noqa: F401
 
 
 @pytest.fixture
@@ -141,3 +141,9 @@ def test_failed_patch_changes_nothing(client, auth):
     r = client.patch(url, json={"quantity": 5, "frequency_days": 0}, headers=auth())
     assert r.status_code == 400 and r.json["error"]["field"] == "frequency_days"
     assert client.get(url, headers=auth()).json["subscription"]["quantity"] == 1
+
+
+def test_subscribe_without_whatsapp_is_409(client, auth):
+    r = create(client, auth, customer=NOWA)
+    assert r.status_code == 409 and r.json["error"]["code"] == "whatsapp_required"
+    assert client.get(f"/api/subscriptions/draft?product_id={MILK}", headers=auth(NOWA)).json["draft"]["whatsapp_ready"] is False

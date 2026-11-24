@@ -17,7 +17,7 @@ from app.errors import Conflict, NotFound, ValidationError, register_error_handl
 from app.models import DeliveryOccurrence, Subscription
 from app.subscriptions import service as svc
 from database.models import Customer, Product
-from subscription_db import ME, MILK, OTHER, SOAP, TODAY, TV, admin_engine, schema_engine, session  # noqa: F401
+from subscription_db import ME, MILK, NOWA, OTHER, SOAP, TODAY, TV, admin_engine, schema_engine, session  # noqa: F401
 
 
 def create(s, customer=ME, **data):
@@ -267,3 +267,28 @@ def test_error_json_shape():
     r = app.test_client().get("/boom")
     assert r.status_code == 409
     assert r.json == {"error": {"code": "already_subscribed", "message": "nope", "subscription_id": 7}}
+
+
+# ------------------------------------------------------------------ WhatsApp required
+def test_whatsapp_required_to_subscribe(session):
+    assert svc.subscription_draft(session, NOWA, MILK, today=TODAY)["whatsapp_ready"] is False
+    assert svc.product_offer(session, MILK, customer_id=NOWA)["whatsapp_ready"] is False
+    assert svc.product_offer(session, MILK, customer_id=ME)["whatsapp_ready"] is True
+    with pytest.raises(Conflict) as e:
+        create(session, customer=NOWA)
+    assert e.value.code == "whatsapp_required"
+
+
+@pytest.mark.parametrize("change", [{"whatsapp_opt_in": False}, {"phone_e164": None}])
+def test_resume_requires_whatsapp(session, change):
+    sid = create(session)["subscription_id"]
+    svc.update_subscription(session, ME, sid, {"status": "PAUSED"}, today=TODAY)
+    for k, v in change.items():
+        setattr(session.get(Customer, ME), k, v)
+    session.flush()
+    with pytest.raises(Conflict) as e:
+        svc.update_subscription(session, ME, sid, {"status": "ACTIVE"}, today=TODAY)
+    assert e.value.code == "whatsapp_required"
+    # other edits and cancelling still work without WhatsApp
+    assert svc.update_subscription(session, ME, sid, {"quantity": 2}, today=TODAY)["quantity"] == 2
+    assert svc.cancel_subscription(session, ME, sid)["status"] == "CANCELLED"

@@ -96,6 +96,11 @@ GET /api/products/:id · GET /api/subscriptions/draft?product_id=&rec_id= · GET
 - For subscribed products he reads `delivery_occurrences` (skips, delays) and subscription edits to suggest adjustments. The user's edited values always win.
 - He scopes the validator's three profile/price warnings to manual orders.
 
+**WhatsApp is required to subscribe** (Shubham, 2026-11-24)
+- Creating or resuming a subscription needs `whatsapp_opt_in = true` and a `phone_e164`. Otherwise the API returns 409 `whatsapp_required`, because reminders and approvals only happen on WhatsApp.
+- Product and draft responses include `whatsapp_ready`, so the UI can ask the customer to connect WhatsApp first.
+- If a customer opts out after subscribing, the scheduler skips each due delivery (`SKIPPED` / `NO_RESPONSE`) without messaging them. Deliveries resume once they opt back in.
+
 ## Still open
 1. Recommendation output for the draft endpoint: endpoint or table, and its shape (recommendation_id, customer_id, product_id, recommended_quantity, recommended_frequency_days, score, rank, reason).
 2. Allowed quantity and frequency bounds; fallback when there's no recommendation.

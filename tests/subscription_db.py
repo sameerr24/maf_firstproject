@@ -15,7 +15,7 @@ from database import connection
 from database.models import Base, Customer, Product
 
 TODAY = dt.date(2026, 11, 24)      # a Tuesday
-ME, OTHER = "CUST-0001", "CUST-0002"
+ME, OTHER, NOWA = "CUST-0001", "CUST-0002", "CUST-0003"   # NOWA: no WhatsApp
 MILK, SOAP, TV = "bb-milk", "bb-soap", "bb-tv"
 
 
@@ -61,9 +61,13 @@ def schema_engine(admin_engine):
                 _product(SOAP, 2, "soap", "99.00", "99.00"),
                 _product(TV, 3, "tv", "20000.00", "18000.00", replenishable=False),
                 Customer(customer_id=ME, signup_date=TODAY, behaviour_segment="regular",
-                         household_size=2, preferred_weekday="Sat"),
+                         household_size=2, preferred_weekday="Sat",
+                         phone_e164="+919800000001", whatsapp_opt_in=True),
                 Customer(customer_id=OTHER, signup_date=TODAY, behaviour_segment="regular",
-                         household_size=1, preferred_weekday="Mon"),
+                         household_size=1, preferred_weekday="Mon",
+                         phone_e164="+919800000002", whatsapp_opt_in=True),
+                Customer(customer_id=NOWA, signup_date=TODAY, behaviour_segment="regular",
+                         household_size=1, preferred_weekday="Wed"),
             ])
             s.flush()
             s.add_all([Inventory(product_id=MILK, available_qty=5), Inventory(product_id=SOAP, available_qty=0)])

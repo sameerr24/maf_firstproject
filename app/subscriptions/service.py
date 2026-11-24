@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session, selectinload
 from app import constants as C
 from app.errors import Conflict, NotFound, ValidationError
 from app.models import Customer, DeliveryOccurrence, Inventory, Product, Subscription
+from app.notifications.sender import can_message
 from app.timeutil import now_utc, today_local
 from database.models import WEEKDAYS
 
@@ -123,7 +124,7 @@ def _occurrence_dates(session: Session, sub: Subscription) -> set[dt.date]:
                                .where(DeliveryOccurrence.subscription_id == sub.subscription_id)))
 
 
-def _next_free_date(session: Session, sub: Subscription, start: dt.date, today: dt.date) -> dt.date:
+def next_free_date(session: Session, sub: Subscription, start: dt.date, today: dt.date) -> dt.date:
     """Roll `start` forward by the subscription's frequency (keeping its cadence) until it is
     schedulable and no occurrence exists for it yet (one occurrence per subscription + date)."""
     taken = _occurrence_dates(session, sub)
@@ -162,6 +163,12 @@ def _get_owned(session: Session, customer_id: str, subscription_id: int, *, lock
     if sub is None:
         raise NotFound("Subscription not found")
     return sub
+
+
+def _require_whatsapp(customer: Customer) -> None:
+    if not can_message(customer):
+        raise Conflict("Connect WhatsApp to subscribe: delivery reminders and approvals happen there.",
+                       code="whatsapp_required")
 
 
 def _live_subscription(session: Session, customer_id: str, product_id: str) -> Subscription | None:
@@ -250,6 +257,7 @@ def product_offer(session: Session, product_id: str, customer_id: str | None = N
     if customer_id is not None:
         live = _live_subscription(session, customer_id, p.product_id)
         out["subscription_id"] = live.subscription_id if live else None
+        out["whatsapp_ready"] = can_message(_get_customer(session, customer_id))
     return out
 
 
@@ -281,6 +289,9 @@ def subscription_draft(session: Session, customer_id: str, product_id: str, rec_
             "reason": rec.reason if rec else None,
         },
         "existing_subscription": subscription_to_dict(live) if live else None,
+        # Subscribing needs WhatsApp (reminders and approvals happen there); the UI asks the
+        # customer to connect it first when this is false.
+        "whatsapp_ready": can_message(customer),
         "limits": {
             "quantity": [C.QUANTITY_MIN, C.QUANTITY_MAX],
             "frequency_days": [C.FREQUENCY_DAYS_MIN, C.FREQUENCY_DAYS_MAX],
@@ -321,6 +332,7 @@ def create_subscription(session: Session, customer_id: str, data: dict,
     if not p.replenishable:
         raise ValidationError("This product isn't available on subscription", code="not_subscribable")
     customer = _get_customer(session, customer_id)
+    _require_whatsapp(customer)
     rec = get_recommendation(session, customer_id, p.product_id, data.get("rec_id"))
 
     quantity = _int_in("quantity", data.get("quantity", rec.quantity if rec else C.DEFAULT_QUANTITY),
@@ -412,6 +424,7 @@ def update_subscription(session: Session, customer_id: str, subscription_id: int
         if "paused_until" in data:
             raise ValidationError("paused_until can't be set when resuming", details={"field": "paused_until"})
         if sub.status == "PAUSED":
+            _require_whatsapp(sub.customer)
             resume(session, sub, today)
     elif "paused_until" in data:
         raise ValidationError("paused_until can only be set together with status=PAUSED",
@@ -428,7 +441,7 @@ def resume(session: Session, sub: Subscription, today: dt.date) -> None:
     sub.status = "ACTIVE"
     sub.paused_until = None
     start = sub.next_delivery_date or default_first_delivery_date(sub.customer, today)
-    sub.next_delivery_date = _next_free_date(session, sub, start, today)
+    sub.next_delivery_date = next_free_date(session, sub, start, today)
 
 
 def cancel_subscription(session: Session, customer_id: str, subscription_id: int) -> dict[str, Any]:
@@ -471,7 +484,7 @@ def skip_next_delivery(session: Session, customer_id: str, subscription_id: int,
         raise Conflict(f"The delivery on {d.isoformat()} can no longer be skipped ({occ.status.lower()})",
                        code="delivery_finalised")
     session.flush()
-    sub.next_delivery_date = _next_free_date(session, sub, d + dt.timedelta(days=sub.frequency_days), today)
+    sub.next_delivery_date = next_free_date(session, sub, d + dt.timedelta(days=sub.frequency_days), today)
     session.flush()
     session.refresh(sub)
     return {"skipped_date": d.isoformat(), "subscription": subscription_to_dict(sub)}

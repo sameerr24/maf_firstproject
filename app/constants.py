@@ -20,3 +20,12 @@ DEFAULT_FREQUENCY_DAYS = 7
 # the ~24h WhatsApp reminder) and no later than MAX_SCHEDULE_AHEAD_DAYS.
 MIN_LEAD_DAYS = 2
 MAX_SCHEDULE_AHEAD_DAYS = 180
+
+# Scheduler.
+# Reminders go out once the delivery date is at most this many days away (i.e. the day before).
+REMINDER_DAYS_BEFORE = 1
+# Customers must reply by this local time on the day before delivery...
+RESPONSE_DEADLINE_LOCAL_TIME = "21:00"
+# ...but always get at least this long to reply (late reminders, demo time travel).
+MIN_RESPONSE_WINDOW_MINUTES = 60
+SCHEDULER_INTERVAL_MINUTES = 5

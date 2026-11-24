@@ -34,6 +34,12 @@ def create_app(config_name: str | None = None, overrides: dict | None = None) ->
     app.register_blueprint(subscriptions_bp, url_prefix="/api/subscriptions")
     app.register_blueprint(orders_bp, url_prefix="/api/orders")
     app.register_blueprint(notifications_bp, url_prefix="/webhooks")
+    if app.config.get("DEV_ENDPOINTS"):
+        from app.dev import bp as dev_bp
+        app.register_blueprint(dev_bp, url_prefix="/api/dev")
+
+    from app.scheduler import init_scheduler
+    init_scheduler(app)
 
     @app.get("/api/health")
     def health():
