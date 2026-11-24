@@ -17,7 +17,7 @@ from app.errors import Conflict, NotFound, ValidationError, register_error_handl
 from app.models import DeliveryOccurrence, Subscription
 from app.subscriptions import service as svc
 from database.models import Customer, Product
-from subscription_db import ME, MILK, NOWA, OTHER, SOAP, TODAY, TV, admin_engine, schema_engine, session  # noqa: F401
+from subscription_db import ME, MILK, NOWA, OTHER, SOAP, TODAY, TV, no_real_telegram, admin_engine, schema_engine, session  # noqa: F401
 
 
 def create(s, customer=ME, **data):
@@ -270,13 +270,13 @@ def test_error_json_shape():
 
 
 # ------------------------------------------------------------------ WhatsApp required
-def test_whatsapp_required_to_subscribe(session):
-    assert svc.subscription_draft(session, NOWA, MILK, today=TODAY)["whatsapp_ready"] is False
-    assert svc.product_offer(session, MILK, customer_id=NOWA)["whatsapp_ready"] is False
-    assert svc.product_offer(session, MILK, customer_id=ME)["whatsapp_ready"] is True
+def test_messaging_required_to_subscribe(session):
+    assert svc.subscription_draft(session, NOWA, MILK, today=TODAY)["messaging_ready"] is False
+    assert svc.product_offer(session, MILK, customer_id=NOWA)["messaging_ready"] is False
+    assert svc.product_offer(session, MILK, customer_id=ME)["messaging_ready"] is True
     with pytest.raises(Conflict) as e:
         create(session, customer=NOWA)
-    assert e.value.code == "whatsapp_required"
+    assert e.value.code == "messaging_required"
 
 
 @pytest.mark.parametrize("change", [{"whatsapp_opt_in": False}, {"phone_e164": None}])
@@ -288,7 +288,7 @@ def test_resume_requires_whatsapp(session, change):
     session.flush()
     with pytest.raises(Conflict) as e:
         svc.update_subscription(session, ME, sid, {"status": "ACTIVE"}, today=TODAY)
-    assert e.value.code == "whatsapp_required"
+    assert e.value.code == "messaging_required"
     # other edits and cancelling still work without WhatsApp
     assert svc.update_subscription(session, ME, sid, {"quantity": 2}, today=TODAY)["quantity"] == 2
     assert svc.cancel_subscription(session, ME, sid)["status"] == "CANCELLED"

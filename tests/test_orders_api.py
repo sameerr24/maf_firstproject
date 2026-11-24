@@ -11,7 +11,7 @@ from app.errors import NotFound, ValidationError
 from app.models import DeliveryOccurrence, Subscription
 from app.orders import service as svc
 from database.models import Order, OrderItem
-from subscription_db import ME, MILK, OTHER, SOAP, admin_engine, schema_engine  # noqa: F401
+from subscription_db import ME, MILK, OTHER, SOAP, no_real_telegram, admin_engine, schema_engine  # noqa: F401
 
 
 def _order(oid, customer, when, lines, source="manual", slot=None):

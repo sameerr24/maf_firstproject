@@ -23,8 +23,9 @@ from sqlalchemy.orm import Session, selectinload
 from app import constants as C
 from app.errors import Conflict, NotFound, ValidationError
 from app.models import Customer, DeliveryOccurrence, Inventory, Product, Subscription
+from database.models import Order, OrderItem
 from app.notifications.sender import can_message
-from app.timeutil import now_utc, today_local
+from app.timeutil import LOCAL_TZ, local_date, now_utc, today_local
 from database.models import WEEKDAYS
 
 # Occurrences that haven't reached a final state yet.
@@ -165,10 +166,10 @@ def _get_owned(session: Session, customer_id: str, subscription_id: int, *, lock
     return sub
 
 
-def _require_whatsapp(customer: Customer) -> None:
-    if not can_message(customer):
-        raise Conflict("Connect WhatsApp to subscribe: delivery reminders and approvals happen there.",
-                       code="whatsapp_required")
+def _require_messaging(session: Session, customer: Customer) -> None:
+    if not can_message(session, customer):
+        raise Conflict("Connect chat notifications to subscribe: delivery reminders and approvals happen there.",
+                       code="messaging_required")
 
 
 def _live_subscription(session: Session, customer_id: str, product_id: str) -> Subscription | None:
@@ -257,7 +258,7 @@ def product_offer(session: Session, product_id: str, customer_id: str | None = N
     if customer_id is not None:
         live = _live_subscription(session, customer_id, p.product_id)
         out["subscription_id"] = live.subscription_id if live else None
-        out["whatsapp_ready"] = can_message(_get_customer(session, customer_id))
+        out["messaging_ready"] = can_message(session, _get_customer(session, customer_id))
     return out
 
 
@@ -289,9 +290,9 @@ def subscription_draft(session: Session, customer_id: str, product_id: str, rec_
             "reason": rec.reason if rec else None,
         },
         "existing_subscription": subscription_to_dict(live) if live else None,
-        # Subscribing needs WhatsApp (reminders and approvals happen there); the UI asks the
-        # customer to connect it first when this is false.
-        "whatsapp_ready": can_message(customer),
+        # Subscribing needs chat notifications (reminders and approvals happen there); the UI
+        # asks the customer to connect them first when this is false.
+        "messaging_ready": can_message(session, customer),
         "limits": {
             "quantity": [C.QUANTITY_MIN, C.QUANTITY_MAX],
             "frequency_days": [C.FREQUENCY_DAYS_MIN, C.FREQUENCY_DAYS_MAX],
@@ -332,7 +333,7 @@ def create_subscription(session: Session, customer_id: str, data: dict,
     if not p.replenishable:
         raise ValidationError("This product isn't available on subscription", code="not_subscribable")
     customer = _get_customer(session, customer_id)
-    _require_whatsapp(customer)
+    _require_messaging(session, customer)
     rec = get_recommendation(session, customer_id, p.product_id, data.get("rec_id"))
 
     quantity = _int_in("quantity", data.get("quantity", rec.quantity if rec else C.DEFAULT_QUANTITY),
@@ -424,7 +425,7 @@ def update_subscription(session: Session, customer_id: str, subscription_id: int
         if "paused_until" in data:
             raise ValidationError("paused_until can't be set when resuming", details={"field": "paused_until"})
         if sub.status == "PAUSED":
-            _require_whatsapp(sub.customer)
+            _require_messaging(session, sub.customer)
             resume(session, sub, today)
     elif "paused_until" in data:
         raise ValidationError("paused_until can only be set together with status=PAUSED",
@@ -458,6 +459,98 @@ def cancel_subscription(session: Session, customer_id: str, subscription_id: int
     return subscription_to_dict(sub)
 
 
+def get_owned_delivery(session: Session, customer_id: str, occurrence_id: int, *,
+                       lock: bool = False) -> tuple[Subscription, DeliveryOccurrence]:
+    """A delivery and its subscription, if the subscription belongs to customer_id (else
+    NotFound). With lock=True both rows are locked, subscription first (same order as the
+    scheduler)."""
+    row = session.execute(select(DeliveryOccurrence.subscription_id).join(Subscription).where(
+        DeliveryOccurrence.occurrence_id == occurrence_id, Subscription.customer_id == customer_id)).first()
+    if row is None:
+        raise NotFound("Delivery not found")
+    sub = _get_owned(session, customer_id, row.subscription_id, lock=lock)
+    q = select(DeliveryOccurrence).where(DeliveryOccurrence.occurrence_id == occurrence_id)
+    if lock:
+        q = q.with_for_update().execution_options(populate_existing=True)
+    return sub, session.scalars(q).one()
+
+
+def advance_cycle(session: Session, sub: Subscription, occ: DeliveryOccurrence, today: dt.date) -> None:
+    """This delivery's cycle is settled: move the subscription to its next cycle, keeping the
+    original cadence (delays never shift it)."""
+    if sub.status == "ACTIVE" and sub.next_delivery_date == occ.scheduled_date:
+        sub.next_delivery_date = next_free_date(
+            session, sub, occ.scheduled_date + dt.timedelta(days=sub.frequency_days), today)
+
+
+def ensure_awaiting_reply(sub: Subscription, occ: DeliveryOccurrence, now: dt.datetime) -> None:
+    if sub.status != "ACTIVE" or occ.status != "NOTIFIED":
+        raise Conflict("This delivery is no longer waiting for your reply", code="delivery_finalised")
+    if occ.response_deadline is not None and now > occ.response_deadline:
+        raise Conflict("The time to reply to this delivery has passed", code="approval_expired")
+
+
+def approve_delivery(session: Session, customer_id: str, occurrence_id: int, slot: Any,
+                     now: dt.datetime | None = None) -> dict[str, Any]:
+    """The customer approved a reminder and picked a slot. In one transaction: lock the stock
+    row, check and decrement it, create the order (source='subscription'), and settle the
+    cycle. Approving accepts the current subscriber price.
+
+    Returns {"status": "order_placed", ...} or {"status": "out_of_stock", ...}; both are
+    state changes the caller must commit.
+    """
+    now = now or now_utc()
+    today = local_date(now)
+    if slot is None:
+        raise ValidationError("Pick a delivery slot", details={"field": "slot"})
+    slot = _slot(slot)
+    sub, occ = get_owned_delivery(session, customer_id, occurrence_id, lock=True)
+    ensure_awaiting_reply(sub, occ, now)
+    product, qty, when = sub.product, sub.quantity, delivery_date(occ)
+
+    stock = session.scalars(select(Inventory).where(Inventory.product_id == sub.product_id)
+                            .with_for_update()).one_or_none()
+    if stock is None or stock.available_qty < qty:
+        occ.status, occ.skip_reason, occ.responded_at = "OUT_OF_STOCK", "OUT_OF_STOCK", now
+        advance_cycle(session, sub, occ, today)
+        session.flush()
+        return {"status": "out_of_stock", "product": product.product_name, "delivery_date": when.isoformat(),
+                "next_delivery_date": _iso(sub.next_delivery_date)}
+
+    price = product.discount_price
+    total = price * qty
+    stock.available_qty -= qty
+    placed_at = now.astimezone(LOCAL_TZ).replace(tzinfo=None)    # orders.order_datetime is naive IST
+    order_id = f"SUB-{occ.occurrence_id}"
+    session.add(Order(order_id=order_id, customer_id=customer_id, order_date=placed_at.date(),
+                      order_datetime=placed_at, item_count=1, unit_count=qty, order_total=total,
+                      source="subscription", delivery_slot=slot))
+    session.flush()
+    session.add(OrderItem(order_item_id=f"SUBI-{occ.occurrence_id}", order_id=order_id,
+                          product_id=product.product_id, product_type=product.product_type,
+                          quantity=qty, unit_price=price, line_total=total))
+    occ.status, occ.order_id, occ.delivery_slot = "ORDER_PLACED", order_id, slot
+    occ.unit_price_at_order, occ.responded_at = price, now
+    sub.unit_price_at_subscription = price             # the accepted price is the new reference
+    advance_cycle(session, sub, occ, today)
+    session.flush()
+    return {"status": "order_placed", "order_id": order_id, "product": product.product_name,
+            "quantity": qty, "delivery_date": when.isoformat(), "slot": slot, "total": _money(total),
+            "next_delivery_date": _iso(sub.next_delivery_date)}
+
+
+def skip_delivery(session: Session, customer_id: str, occurrence_id: int,
+                  now: dt.datetime | None = None) -> dict[str, Any]:
+    """The customer chose "Skip this delivery" on a reminder."""
+    now = now or now_utc()
+    sub, occ = get_owned_delivery(session, customer_id, occurrence_id, lock=True)
+    ensure_awaiting_reply(sub, occ, now)
+    occ.status, occ.skip_reason, occ.responded_at = "SKIPPED", "USER_SKIP", now
+    advance_cycle(session, sub, occ, local_date(now))
+    session.flush()
+    return {"skipped_date": delivery_date(occ).isoformat(), "next_delivery_date": _iso(sub.next_delivery_date)}
+
+
 def delivery_date(occ: DeliveryOccurrence) -> dt.date:
     """When this delivery actually happens: its cycle date plus any delay."""
     return occ.scheduled_date + dt.timedelta(days=occ.delay_days or 0)
@@ -475,15 +568,9 @@ def delay_delivery(session: Session, customer_id: str, occurrence_id: int, days:
                    now: dt.datetime | None = None) -> DeliveryOccurrence:
     """Customer chose "Delay N days" on a reminder. The delivery moves by N days and goes back
     to DELAYED: the scheduler sends a fresh reminder before the new date, which must be
-    approved again. The subscription's cycle is unchanged. Called by the WhatsApp flow."""
+    approved again. The subscription's cycle is unchanged. Called by the chat flow."""
     now = now or now_utc()
-    row = session.execute(select(DeliveryOccurrence.subscription_id).join(Subscription).where(
-        DeliveryOccurrence.occurrence_id == occurrence_id, Subscription.customer_id == customer_id)).first()
-    if row is None:
-        raise NotFound("Delivery not found")
-    sub = _get_owned(session, customer_id, row.subscription_id, lock=True)       # lock order: sub, then occ
-    occ = session.scalars(select(DeliveryOccurrence).where(DeliveryOccurrence.occurrence_id == occurrence_id)
-                          .with_for_update().execution_options(populate_existing=True)).one()
+    sub, occ = get_owned_delivery(session, customer_id, occurrence_id, lock=True)
     if sub.status != "ACTIVE" or occ.status != "NOTIFIED":
         raise Conflict("This delivery can no longer be delayed", code="delivery_finalised")
     if days not in delay_options(sub, occ):

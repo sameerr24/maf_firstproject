@@ -27,3 +27,8 @@ def parse_moment(value: str) -> dt.datetime:
     """ISO datetime; a value without an offset is taken as local business time."""
     moment = dt.datetime.fromisoformat(value)
     return moment.replace(tzinfo=LOCAL_TZ) if moment.tzinfo is None else moment
+
+
+def fmt_day(d: dt.date) -> str:
+    """Customer-facing date, e.g. "Sat, 28 Nov"."""
+    return d.strftime("%a, %d %b")

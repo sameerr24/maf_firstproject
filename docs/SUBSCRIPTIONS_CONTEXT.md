@@ -96,10 +96,17 @@ GET /api/products/:id · GET /api/subscriptions/draft?product_id=&rec_id= · GET
 - For subscribed products he reads `delivery_occurrences` (skips, delays) and subscription edits to suggest adjustments. The user's edited values always win.
 - He scopes the validator's three profile/price warnings to manual orders.
 
-**WhatsApp is required to subscribe** (Shubham, 2026-11-24)
-- Creating or resuming a subscription needs `whatsapp_opt_in = true` and a `phone_e164`. Otherwise the API returns 409 `whatsapp_required`, because reminders and approvals only happen on WhatsApp.
-- Product and draft responses include `whatsapp_ready`, so the UI can ask the customer to connect WhatsApp first.
-- If a customer opts out after subscribing, the scheduler skips each due delivery (`SKIPPED` / `NO_RESPONSE`) without messaging them. Deliveries resume once they opt back in.
+**Chat notifications are required to subscribe** (Shubham, 2026-11-24/25)
+- A customer can be messaged when `whatsapp_opt_in = true` (general consent), `phone_e164` is set, and their chat is linked. Creating or resuming a subscription otherwise returns 409 `messaging_required`.
+- Product and draft responses include `messaging_ready`.
+- If a customer stops being reachable after subscribing (opt-out, phone removed, bot blocked), due deliveries are skipped (`SKIPPED` / `NO_RESPONSE`) without messaging them. Nothing is charged.
+
+**Demo channel: Telegram bot, designed for WhatsApp** (Shubham, 2026-11-25)
+- The brief only requires push notifications. The product is designed for WhatsApp (templates in `docs/WHATSAPP_TEMPLATES.md`). Because of Meta account restrictions, the demo sends the same messages and buttons through a Telegram bot.
+- A bot can only message chats that started it, by chat ID. The customer taps Start, then "Share my phone number". The shared number must be their own and must match `customers.phone_e164`. The chat is stored in `telegram_links` (migration `migrations/sql/002_telegram_links.sql`; no existing table changed).
+- Existing names stay: `whatsapp_opt_in` means "may be messaged" and `whatsapp_messages` logs Telegram messages too (`wa_message_id` = `tg:<chat>:<message>` outbound, `tg-update:<update_id>` inbound, for dedupe).
+- Run the bot with `flask --app run telegram-poll` (long polling, so no public URL or ngrok). Reminders go through Telegram whenever `TELEGRAM_BOT_TOKEN` is set.
+- Approve: slot picker, then one transaction: lock and decrement stock, create the order, set `ORDER_PLACED`. Approving accepts the current subscriber price.
 
 **Delay = approve again** (Shubham, 2026-11-24; the problem statement requires every charge to be approved)
 - "Delay N days" (N = 1 or 2) moves only this delivery. The occurrence keeps its cycle date (`scheduled_date`), gets `delay_days`, and becomes `DELAYED`. The delivery date is `scheduled_date + delay_days`.

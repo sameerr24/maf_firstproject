@@ -41,8 +41,8 @@ from app.models import DeliveryOccurrence, Inventory, Subscription
 from app.notifications.sender import (
     TEMPLATE_OUT_OF_STOCK, TEMPLATE_REMINDER, TEMPLATE_SKIPPED, MessageSender, can_message, get_sender,
 )
-from app.subscriptions.service import delivery_date, next_free_date, resume
-from app.timeutil import LOCAL_TZ, local_date, now_utc
+from app.subscriptions.service import advance_cycle, delivery_date, next_free_date, resume
+from app.timeutil import LOCAL_TZ, fmt_day, local_date, now_utc
 
 log = logging.getLogger(__name__)
 
@@ -60,8 +60,7 @@ def response_deadline(delivery_date: dt.date, now: dt.datetime) -> dt.datetime:
     return max(deadline, now + dt.timedelta(minutes=C.MIN_RESPONSE_WINDOW_MINUTES)).astimezone(dt.timezone.utc)
 
 
-def _fmt_date(d: dt.date) -> str:
-    return d.strftime("%a, %d %b")          # "Sat, 28 Nov"
+_fmt_date = fmt_day                          # "Sat, 28 Nov"
 
 
 def _fmt_reply_by(deadline: dt.datetime) -> str:
@@ -99,11 +98,7 @@ def _each(engine: Engine, items: list, fn: Callable[[Session, Any], str | None],
             summary[outcome].append(record(item))
 
 
-def _advance(s: Session, sub: Subscription, occ: DeliveryOccurrence, today: dt.date) -> None:
-    """This cycle is settled: move the subscription to its next cycle (original cadence)."""
-    if sub.status == "ACTIVE" and sub.next_delivery_date == occ.scheduled_date:
-        sub.next_delivery_date = next_free_date(
-            s, sub, occ.scheduled_date + dt.timedelta(days=sub.frequency_days), today)
+_advance = advance_cycle
 
 
 def _settle_or_remind(s: Session, sub: Subscription, occ: DeliveryOccurrence, now: dt.datetime,
@@ -113,10 +108,10 @@ def _settle_or_remind(s: Session, sub: Subscription, occ: DeliveryOccurrence, no
     d = delivery_date(occ)
     params = {"product": sub.product.product_name, "quantity": sub.quantity, "date": _fmt_date(d)}
 
-    if not can_message(sub.customer):                     # can't ask, so it can't be approved
+    if not can_message(s, sub.customer):                  # can't ask, so it can't be approved
         occ.status, occ.skip_reason = "SKIPPED", "NO_RESPONSE"
         _advance(s, sub, occ, today)
-        log.warning("Scheduler: subscription %s skipped %s: customer %s has no WhatsApp",
+        log.warning("Scheduler: subscription %s skipped %s: customer %s can't be messaged",
                     sub.subscription_id, d, sub.customer_id)
         return "no_whatsapp"
 

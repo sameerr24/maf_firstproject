@@ -14,7 +14,7 @@ from app.subscriptions import jobs
 from app.subscriptions import service as svc
 from app.timeutil import LOCAL_TZ
 from database.models import Customer, Product
-from subscription_db import ME, MILK, OTHER, SOAP, TODAY, admin_engine, schema_engine  # noqa: F401
+from subscription_db import ME, MILK, OTHER, SOAP, TODAY, no_real_telegram, admin_engine, schema_engine  # noqa: F401
 
 
 def at(day: int, hour: int = 9, minute: int = 0, month: int = 11) -> dt.datetime:

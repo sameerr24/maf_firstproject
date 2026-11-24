@@ -10,16 +10,24 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.models import Inventory, SubscriptionsBase
+from app.models import Inventory, SubscriptionsBase, TelegramLink
 from database import connection
 from database.models import Base, Customer, Product
 
 TODAY = dt.date(2026, 11, 24)      # a Tuesday
-ME, OTHER, NOWA = "CUST-0001", "CUST-0002", "CUST-0003"   # NOWA: no WhatsApp
+ME, OTHER, NOWA = "CUST-0001", "CUST-0002", "CUST-0003"   # NOWA: no phone / chat
+CHAT = {ME: 1001, OTHER: 1002}                             # Telegram chat ids (= user ids)
 MILK, SOAP, TV = "bb-milk", "bb-soap", "bb-tv"
 
 
 # ------------------------------------------------------------------ fixtures
+@pytest.fixture(autouse=True)
+def no_real_telegram(monkeypatch):
+    """Never use the real bot token from .env in tests: scheduler runs fall back to the
+    LoggingSender. Set to empty (not deleted) so load_env() can't re-add it from .env."""
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "")
+
+
 @pytest.fixture(scope="module")
 def admin_engine():
     try:
@@ -71,6 +79,9 @@ def schema_engine(admin_engine):
             ])
             s.flush()
             s.add_all([Inventory(product_id=MILK, available_qty=5), Inventory(product_id=SOAP, available_qty=0)])
+            # ME and OTHER can be messaged (opted in + phone + linked chat); NOWA can't.
+            s.add_all([TelegramLink(customer_id=ME, chat_id=CHAT[ME], telegram_user_id=CHAT[ME]),
+                       TelegramLink(customer_id=OTHER, chat_id=CHAT[OTHER], telegram_user_id=CHAT[OTHER])])
             s.commit()
         yield eng, schema
     finally:

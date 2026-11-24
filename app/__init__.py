@@ -41,6 +41,17 @@ def create_app(config_name: str | None = None, overrides: dict | None = None) ->
     from app.scheduler import init_scheduler
     init_scheduler(app)
 
+    @app.cli.command("telegram-poll")
+    def telegram_poll():
+        """Run the Telegram bot (long polling): account linking and reminder replies."""
+        import logging
+
+        from app.notifications.telegram_api import TelegramClient
+        from app.notifications.telegram_bot import poll_forever
+
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s: %(message)s")
+        poll_forever(app.extensions["db_engine"], TelegramClient(os.getenv("TELEGRAM_BOT_TOKEN", "").strip()))
+
     @app.get("/api/health")
     def health():
         db_session.execute(text("SELECT 1"))
