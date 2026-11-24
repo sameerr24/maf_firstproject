@@ -64,6 +64,12 @@ def _fmt_date(d: dt.date) -> str:
     return d.strftime("%a, %d %b")          # "Sat, 28 Nov"
 
 
+def _fmt_reply_by(deadline: dt.datetime) -> str:
+    local = deadline.astimezone(LOCAL_TZ)                  # "9:00 PM on Fri, 27 Nov" (portable, no %-I)
+    hour = local.hour % 12 or 12
+    return f"{hour}:{local.minute:02d} {'AM' if local.hour < 12 else 'PM'} on {_fmt_date(local.date())}"
+
+
 def _fmt_rupees(amount) -> str:
     return f"₹{amount:.2f}"
 
@@ -127,7 +133,8 @@ def _settle_or_remind(s: Session, sub: Subscription, occ: DeliveryOccurrence, no
     occ.response_deadline = response_deadline(d, now)
     oid = occ.occurrence_id
     sender.send_template(s, customer=sub.customer, template=TEMPLATE_REMINDER, occurrence=occ,
-                         params={**params, "price": _reminder_price(sub)},
+                         params={**params, "price": _reminder_price(sub),
+                                 "reply_by": _fmt_reply_by(occ.response_deadline)},
                          buttons=[f"APPROVE:{oid}", f"SKIP:{oid}", f"STOP:{oid}"])
     return "reminded"
 
@@ -174,10 +181,11 @@ def _auto_skip(engine: Engine, now: dt.datetime, today: dt.date, sender: Message
             return None
         occ.status, occ.skip_reason = "SKIPPED", "NO_RESPONSE"
         _advance(s, sub, occ, today)
-        sender.send_template(s, customer=sub.customer, template=TEMPLATE_SKIPPED, occurrence=occ,
-                             params={"product": sub.product.product_name, "date": _fmt_date(delivery_date(occ)),
-                                     "next_date": _fmt_date(sub.next_delivery_date)
-                                     if sub.status == "ACTIVE" and sub.next_delivery_date else None})
+        if sub.status == "ACTIVE" and sub.next_delivery_date:   # always true today (pause/cancel clear pending)
+            sender.send_template(s, customer=sub.customer, template=TEMPLATE_SKIPPED, occurrence=occ,
+                                 params={"product": sub.product.product_name,
+                                         "date": _fmt_date(delivery_date(occ)),
+                                         "next_date": _fmt_date(sub.next_delivery_date)})
         return "auto_skipped"
 
     _each(engine, [tuple(r) for r in rows], skip_unanswered, summary, record=lambda row: row[1])

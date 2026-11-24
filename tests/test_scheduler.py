@@ -66,7 +66,9 @@ def test_reminder_the_day_before(engine):
         assert occ.response_deadline == at(27, 21)                       # 21:00 IST the day before
     (msg,) = msgs
     assert msg["template"] == "subscription_delivery_reminder" and msg["to"] == "+919800000001"
-    assert msg["params"] == {"product": "Milk", "quantity": 3, "date": "Sat, 28 Nov", "price": "₹81.00"}
+    assert msg["params"] == {"product": "Milk", "quantity": 3, "date": "Sat, 28 Nov", "price": "₹81.00",
+                             "reply_by": "9:00 PM on Fri, 27 Nov"}
+    assert msg["body_parameters"] == ["3", "Milk", "Sat, 28 Nov", "₹81.00", "9:00 PM on Fri, 27 Nov"]
     assert msg["buttons"] == [f"APPROVE:{occ.occurrence_id}", f"SKIP:{occ.occurrence_id}", f"STOP:{occ.occurrence_id}"]
     # idempotent: a second run (or the other process) does nothing
     assert run(engine, at(27, 9, 5))["reminded"] == [] and len(state(engine, sid)[3]) == 1
@@ -325,3 +327,23 @@ def test_dashboard_skip_and_pause_handle_delayed(engine):
         s.commit()
     assert r["skipped_date"] == "2026-11-28" and r["subscription"]["next_delivery_date"] == "2026-12-05"
     assert state(engine, sid)[2][dt.date(2026, 11, 28)] == ("SKIPPED", "USER_SKIP")
+
+
+def test_late_reminder_states_its_own_deadline(engine):
+    subscribe(engine)
+    run(engine, at(27, 20, 50))
+    assert state(engine, 1)[3][0]["params"]["reply_by"] == "9:50 PM on Fri, 27 Nov"
+
+
+@pytest.mark.parametrize("template,params,buttons", [
+    ("subscription_delivery_reminder", {"product": "x", "quantity": 1, "date": "d", "price": "p"}, ["a", "b", "c"]),
+    ("subscription_delivery_reminder", {"product": "x", "quantity": 1, "date": "d", "price": "p", "reply_by": "r",
+                                        "extra": 1}, ["a", "b", "c"]),
+    ("subscription_delivery_reminder", {"product": "x", "quantity": 1, "date": "d", "price": "p", "reply_by": "r"}, []),
+    ("delivery_skipped_notice", {"product": "x", "date": "d", "next_date": None}, None),
+    ("no_such_template", {}, None),
+])
+def test_template_parameters_must_match_approved_templates(template, params, buttons):
+    from app.notifications.sender import body_parameters
+    with pytest.raises(ValueError):
+        body_parameters(template, params, buttons)
