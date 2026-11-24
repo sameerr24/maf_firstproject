@@ -25,12 +25,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # run from anywhere
 
-from sqlalchemy import delete, func, inspect, insert, select, text  # noqa: E402
+from sqlalchemy import delete, func, insert, inspect, or_, select, text  # noqa: E402
 from sqlalchemy.engine import Engine  # noqa: E402
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError  # noqa: E402
 
 from database.connection import DatabaseConfigError, check_connection, make_engine, safe_url  # noqa: E402
-from database.models import LOAD_ORDER  # noqa: E402
+from database.models import LOAD_ORDER, app_columns  # noqa: E402
 from database.sources import SourceTable, SourceValidationError, file_sha256, load_sources  # noqa: E402
 
 BATCH_SIZE = 5000
@@ -43,6 +43,27 @@ class LoadError(RuntimeError):
 def existing_counts(conn) -> dict[str, int]:
     return {m.__tablename__: conn.execute(select(func.count()).select_from(m.__table__)).scalar_one()
             for m in LOAD_ORDER}
+
+
+def app_data_in_use(conn) -> dict[str, int]:
+    """Rows whose app-managed columns (customer names/phones, subscription orders, ...) hold data.
+
+    --replace deletes and re-inserts from the CSVs, which would silently wipe that data,
+    so the load refuses when any is found.
+    """
+    found = {}
+    for model in LOAD_ORDER:
+        t = model.__table__
+        conds = []
+        for c in app_columns(t):
+            default = c.server_default.arg if c.server_default is not None else None
+            conds.append(t.c[c.name].is_not(None) if default is None
+                         else t.c[c.name].is_distinct_from(default))
+        if conds:
+            n = conn.execute(select(func.count()).select_from(t).where(or_(*conds))).scalar_one()
+            if n:
+                found[t.name] = n
+    return found
 
 
 def load_all(engine: Engine, sources: dict[str, SourceTable], replace: bool = False,
@@ -68,6 +89,13 @@ def load_all(engine: Engine, sources: dict[str, SourceTable], replace: bool = Fa
                         f"The database already contains data ({summary}). Nothing was changed.\n"
                         "  Re-run with --replace to perform a transactional full refresh "
                         "(existing rows in these five tables are replaced by the CSV contents).")
+                in_use = app_data_in_use(conn)
+                if in_use:
+                    raise LoadError(
+                        f"App-managed data would be wiped by --replace: {in_use} row(s) have customer "
+                        "names/phones/WhatsApp opt-in or subscription orders/delivery slots. Nothing was changed.\n"
+                        "  The shared database is now also written by the Flask app; don't --replace it. "
+                        "Use a local database for reloads.")
                 log(f"Replacing existing data ({summary}) inside the transaction...")
                 for model in reversed(LOAD_ORDER):
                     conn.execute(delete(model.__table__))

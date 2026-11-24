@@ -23,11 +23,22 @@ from sqlalchemy.engine import Engine  # noqa: E402
 from sqlalchemy.exc import SQLAlchemyError  # noqa: E402
 
 from database.connection import DatabaseConfigError, check_connection, make_engine, safe_url  # noqa: E402
-from database.models import LOAD_ORDER  # noqa: E402
+from database.models import LOAD_ORDER, csv_columns  # noqa: E402
 from database.sources import SourceTable, SourceValidationError, load_sources  # noqa: E402
 
 PASS, WARN, FAIL = "PASS", "WARNING", "FAIL"
 CATEGORY_ORDER = ["structure", "counts", "keys", "required", "relationships", "values", "consistency", "content"]
+
+# Rows that came from the CSVs. Orders placed by subscriptions (source='subscription')
+# and their items are app data, so the CSV count/content comparisons skip them.
+CSV_ROWS_WHERE = {
+    "orders": "source = 'manual'",
+    "order_items": "order_id IN (SELECT order_id FROM orders WHERE source = 'manual')",
+}
+
+
+def _csv_rows_filter(name: str) -> str:
+    return f" WHERE {CSV_ROWS_WHERE[name]}" if name in CSV_ROWS_WHERE else ""
 
 
 @dataclass
@@ -83,7 +94,7 @@ def run_checks(engine: Engine, sources: dict[str, SourceTable] | None) -> list[C
         # 2. Row counts vs CSV ---------------------------------------------------
         for m in LOAD_ORDER:
             name = m.__tablename__
-            db_n = _scalar(conn, f"SELECT count(*) FROM {name}")
+            db_n = _scalar(conn, f"SELECT count(*) FROM {name}{_csv_rows_filter(name)}")
             if sources is None:
                 checks.append(Check("counts", f"{name}: row count", WARN, f"db={db_n:,}; CSV not available"))
             else:
@@ -186,9 +197,12 @@ def run_checks(engine: Engine, sources: dict[str, SourceTable] | None) -> list[C
         if sources is not None:
             for m in LOAD_ORDER:
                 t = m.__table__
-                cols = [c.name for c in t.columns]
+                cols = [c.name for c in csv_columns(t)]
                 pk = [c.name for c in t.primary_key.columns]
-                rows =conn.execute(select(*[t.c[c] for c in cols])).all()
+                query = select(*[t.c[c] for c in cols])
+                if t.name in CSV_ROWS_WHERE:
+                    query = query.where(text(CSV_ROWS_WHERE[t.name]))
+                rows = conn.execute(query).all()
                 db_rows = {tuple(getattr(r, c) for c in pk): tuple(r) for r in rows}
                 src_rows = {tuple(rec[c] for c in pk): tuple(rec[c] for c in cols) for rec in sources[t.name].records}
                 missing_in_db = src_rows.keys() - db_rows.keys()

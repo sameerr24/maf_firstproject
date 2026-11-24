@@ -11,7 +11,9 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.schema import CreateIndex, CreateTable
 
 from database import connection
-from database.models import LOAD_ORDER, Base, Customer, CustomerProductProfile, Order, OrderItem, Product
+from database.models import (
+    LOAD_ORDER, Base, Customer, CustomerProductProfile, Order, OrderItem, Product, app_columns, csv_columns,
+)
 from database.sources import SOURCE_FILES, SourceValidationError, convert_value, file_sha256, load_sources
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -31,7 +33,17 @@ def test_five_tables_in_dependency_order():
 @pytest.mark.parametrize("model", LOAD_ORDER, ids=lambda m: m.__tablename__)
 def test_model_columns_match_csv_header_exactly(model):
     header = list(pd.read_csv(ROOT / SOURCE_FILES[model], nrows=0).columns)
-    assert [c.name for c in model.__table__.columns] == header
+    assert [c.name for c in csv_columns(model.__table__)] == header
+
+
+def test_app_managed_columns():
+    """Columns added by the subscriptions migration: not in the CSVs, and loadable without them."""
+    app = {m.__tablename__: [c.name for c in app_columns(m.__table__)] for m in LOAD_ORDER}
+    assert app == {"products": [], "customers": ["customer_name", "phone_e164", "whatsapp_opt_in"],
+                   "orders": ["source", "delivery_slot"], "order_items": [], "customer_product_profiles": []}
+    for m in LOAD_ORDER:
+        for c in app_columns(m.__table__):
+            assert c.nullable or c.server_default is not None, f"{c} must be nullable or have a server default"
 
 
 def test_primary_keys():

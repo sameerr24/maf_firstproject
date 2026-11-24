@@ -4,8 +4,8 @@ Deliberately a separate MetaData from database.models.Base: Sameer's tests asser
 metadata holds exactly his 5 tables. Foreign keys to his tables point at his Column
 objects directly, so nothing is duplicated.
 
-The schema is owned by the SQL migration (already applied on Supabase). Never call
-create_all() on this metadata: it also holds partial "view" mappings of customers/orders.
+The schema is owned by the SQL migration (already applied on Supabase). Do not call
+create_all() against the shared database.
 """
 
 from __future__ import annotations
