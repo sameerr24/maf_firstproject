@@ -68,8 +68,34 @@ RLS is enabled with no policies. Flask connects with the postgres connection str
 ## API endpoints (Shubham)
 GET /api/products/:id · GET /api/subscriptions/draft?product_id=&rec_id= · GET/POST /api/subscriptions · PATCH/DELETE /api/subscriptions/:id · POST /api/subscriptions/:id/skip · GET /api/orders · GET/POST /webhooks/whatsapp · POST /api/dev/run-scheduler
 
-## Open questions for Sameer
-1. Recommendation output: endpoint or table? Shape: recommendation_id, customer_id, product_id, recommended_quantity, recommended_frequency_days, score, rank, reason. (Don't just read back `customer_product_profiles.intended_*`; those are the parameters used to generate the synthetic data.)
-2. Auth: how the token reaches Flask, what it contains, and how to get customer_id from it.
-3. price vs discount_price; order ID format; existing models and repo layout.
-4. Allowed quantity and frequency bounds; fallback when there's no recommendation.
+## Decisions (agreed with Sameer, 2026-11-24)
+
+**Pricing**
+- `products.price` is the regular (non-subscriber) price, and `discount_price` is the subscriber price.
+- Subscriptions charge `discount_price`, stored as `unit_price_at_subscription`.
+- The PDP shows `price` struck through, plus the saving per unit and per delivery.
+
+**Auth** (Sameer adds `app/auth.py`)
+- The interface is `@login_required` (sets `g.customer_id`), `get_current_customer_id()` and `issue_token(customer_id)`.
+- The token arrives as `Authorization: Bearer <token>`. It's signed with `FLASK_SECRET_KEY` via itsdangerous and expires after 7 days.
+- A failure returns 401 with `{"error": {"code": "unauthorized", "message": ...}}`.
+- **Never** read customer_id from the request body or query; always use `g.customer_id`.
+- Another customer's subscription or order returns **404**, not 403.
+- Demo login: `POST /api/auth/demo-login {"customer_id": ...}`, only when `AUTH_DEMO_LOGIN=1`. Also `GET /api/auth/me`.
+- In tests, call `issue_token("CUST-0001")` directly.
+- Webhooks don't use this auth. They use the Meta signature plus `phone_e164`.
+
+**Subscription orders** (written on Approve)
+- `order_id = SUB-<occurrence_id>`, `order_item_id = SUBI-<occurrence_id>` (IDs are at most 20 characters).
+- `order_datetime` is **naive Asia/Kolkata time**, and `order_date = order_datetime.date()`. The column has no time zone and a CHECK requires them to match, so UTC would break orders between 00:00 and 05:30 IST.
+- `source='subscription'`, `item_count=1`, `unit_count=quantity`, `unit_price=unit_price_at_subscription` (or the accepted new price), `line_total = quantity * unit_price` exactly, `order_total = line_total`.
+
+**Recommendations** (Sameer)
+- He learns only from `source='manual'` orders, so subscriptions don't feed back into their own cadence.
+- Products with a live (non-cancelled) subscription are left out of the recommendations grid.
+- For subscribed products he reads `delivery_occurrences` (skips, delays) and subscription edits to suggest adjustments. The user's edited values always win.
+- He scopes the validator's three profile/price warnings to manual orders.
+
+## Still open
+1. Recommendation output for the draft endpoint: endpoint or table, and its shape (recommendation_id, customer_id, product_id, recommended_quantity, recommended_frequency_days, score, rank, reason).
+2. Allowed quantity and frequency bounds; fallback when there's no recommendation.
