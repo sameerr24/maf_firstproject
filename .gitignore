@@ -9,3 +9,7 @@ __pycache__/
 
 # Generated per environment (contains database host/user)
 data/database_validation_report.md
+
+# OS / frontend
+.DS_Store
+node_modules/
