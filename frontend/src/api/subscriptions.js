@@ -19,3 +19,16 @@ export const cancelSubscription = (token, id) =>
 
 export const skipNextDelivery = (token, id) =>
   request(`/api/subscriptions/${id}/skip`, { token, method: "POST" });
+
+// Replies to delivery reminders: the website's version of the chat buttons.
+/** Deliveries waiting for the customer's reply (a reminder was sent in chat). */
+export const getPendingDeliveries = (token) => request("/api/subscriptions/deliveries/pending", { token });
+
+export const approveDelivery = (token, occurrenceId, slot) =>
+  request(`/api/subscriptions/deliveries/${occurrenceId}/approve`, { token, method: "POST", body: { slot } });
+
+export const skipDelivery = (token, occurrenceId) =>
+  request(`/api/subscriptions/deliveries/${occurrenceId}/skip`, { token, method: "POST" });
+
+export const delayDelivery = (token, occurrenceId, days) =>
+  request(`/api/subscriptions/deliveries/${occurrenceId}/delay`, { token, method: "POST", body: { days } });

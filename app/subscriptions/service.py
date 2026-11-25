@@ -309,6 +309,41 @@ def list_subscriptions(session: Session, customer_id: str, include_cancelled: bo
     return [subscription_to_dict(s) for s in subs]
 
 
+def pending_deliveries(session: Session, customer_id: str, now: dt.datetime | None = None) -> list[dict[str, Any]]:
+    """Deliveries waiting for the customer's reply: the reminders sent in chat, for the website
+    to show with the same options (approve with a slot, skip, delay, stop). Soonest first."""
+    now = now or now_utc()
+    rows = session.scalars(
+        select(DeliveryOccurrence).join(Subscription)
+        .where(Subscription.customer_id == customer_id, Subscription.status == "ACTIVE",
+               DeliveryOccurrence.status == "NOTIFIED",
+               (DeliveryOccurrence.response_deadline.is_(None)) | (DeliveryOccurrence.response_deadline > now))
+        .options(selectinload(DeliveryOccurrence.subscription).selectinload(Subscription.product))).all()
+    out = []
+    for occ in sorted(rows, key=lambda o: (delivery_date(o), o.occurrence_id)):
+        sub, p = occ.subscription, occ.subscription.product
+        price, was = p.discount_price, sub.unit_price_at_subscription
+        out.append({
+            "occurrence_id": occ.occurrence_id,
+            "subscription_id": sub.subscription_id,
+            "product": _product_summary(p),
+            "quantity": sub.quantity,
+            "delivery_date": delivery_date(occ).isoformat(),
+            "delayed_days": occ.delay_days or 0,
+            "unit_price": _money(price),                 # approving accepts today's subscriber price
+            "total": _money(price * sub.quantity),
+            "saving": _money(max(p.price - price, Decimal(0)) * sub.quantity),
+            "price_changed": price != was,
+            "previous_total": _money(was * sub.quantity),
+            "reply_by": _iso(occ.response_deadline),
+            "notified_at": _iso(occ.notified_at),
+            "slots": list(C.DELIVERY_SLOTS),
+            "preferred_slot": sub.preferred_slot,
+            "delay_options": delay_options(sub, occ),
+        })
+    return out
+
+
 def get_subscription(session: Session, customer_id: str, subscription_id: int) -> dict[str, Any]:
     return subscription_to_dict(_get_owned(session, customer_id, subscription_id))
 

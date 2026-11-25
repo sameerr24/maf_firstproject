@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import PendingDeliveries from "../components/PendingDeliveries.jsx";
 import ProductImage from "../components/ProductImage.jsx";
 import {
   cancelSubscription, createSubscription, getDraft, listSubscriptions, skipNextDelivery, updateSubscription,
@@ -75,6 +76,8 @@ export default function SubscriptionPage({ product, onBack }) {
       )}
 
       <div className="subs">
+        <PendingDeliveries token={token} onChanged={loadSubs} onFail={fail} />
+
         {product && !draft && !error && <div className="sub-new sub-new--loading skeleton" aria-busy="true" />}
 
         {product && draft && (

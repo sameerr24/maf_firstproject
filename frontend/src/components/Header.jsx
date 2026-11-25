@@ -1,4 +1,5 @@
 import Brand from "./Brand.jsx";
+import PendingBadge from "./PendingBadge.jsx";
 
 export default function Header({ customerId, onSwitchCustomer, currentPage }) {
   return (
@@ -7,7 +8,7 @@ export default function Header({ customerId, onSwitchCustomer, currentPage }) {
         <a href="#/" className="header__home" aria-label="Back to recommendations"><Brand /></a>
         <div className="header__account">
           <a href="#/subscriptions" className="header__link"
-             aria-current={currentPage === "subscriptions" ? "page" : undefined}>My subscriptions</a>
+             aria-current={currentPage === "subscriptions" ? "page" : undefined}>My subscriptions<PendingBadge /></a>
           <a href="#/orders" className="header__link"
              aria-current={currentPage === "orders" ? "page" : undefined}>Orders</a>
           <span className="avatar" aria-hidden="true">
