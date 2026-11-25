@@ -2,6 +2,13 @@
 
 .subs { display: grid; gap: 1.5rem; max-width: 980px; margin: 0 auto; }
 
+/* ---------- header link (Header.jsx) ---------- */
+.header__link { color: var(--ink-2); font-weight: 650; font-size: .9rem; text-decoration: none; padding: .4rem .75rem;
+  border-radius: 999px; white-space: nowrap; }
+.header__link:hover { color: var(--brand-700); background: var(--brand-50); }
+.header__link[aria-current="page"] { color: var(--brand-900); background: var(--brand-100); }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
 /* ---------- new subscription card ---------- */
 .sub-new { background: var(--surface); border: 1px solid var(--line); border-radius: calc(var(--radius) + 6px);
   box-shadow: var(--shadow); padding: 1.75rem; display: grid; gap: 1.25rem; }
@@ -56,6 +63,7 @@
 .sub-ok { color: var(--brand-700); font-size: .85rem; font-weight: 650; }
 
 @media (max-width: 640px) {
+  .header__link { padding: .35rem .5rem; font-size: .8rem; }
   .sub-new { padding: 1.25rem; }
   .sub-new__product { grid-template-columns: 88px 1fr; }
   .sub-form { grid-template-columns: 1fr; }

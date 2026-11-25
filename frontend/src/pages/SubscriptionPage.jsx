@@ -106,13 +106,15 @@ export default function SubscriptionPage({ product, onBack }) {
 
         {!product && (
           <section className="sub-new sub-new--done">
-            <h1>Your subscriptions</h1>
-            <p className="muted">To add one, pick a product from your recommendations.</p>
+            <h1>My subscriptions</h1>
+            <p className="muted">
+              Edit, skip, pause or cancel any subscription here. To add one, pick a product from your recommendations.
+            </p>
           </section>
         )}
 
         <section className="sub-list" aria-labelledby="sub-list-title">
-          <h2 id="sub-list-title">Your subscriptions</h2>
+          <h2 id="sub-list-title" className={product ? undefined : "visually-hidden"}>Your subscriptions</h2>
           {!subs && !error && <p className="muted">Loading…</p>}
           {subs && subs.length === 0 && <p className="muted">No subscriptions yet.</p>}
           {subs && subs.length > 0 && (
