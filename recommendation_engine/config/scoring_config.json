@@ -1,0 +1,92 @@
+{
+  "_comment": "Tuning parameters for recommendation_engine. Scoring code reads every number from here; change values, not code. Validated by recommendation_engine/config/__init__.py on load.",
+
+  "history": {
+    "_comment": "order_sources: which orders.source values count as purchase history. Subscription orders are excluded on purpose: their cadence is set by the subscription itself, so feeding them back would just confirm our own suggestion. reference_date: 'latest_order_date' (newest order of those sources; the synthetic history ends 2026-11-15), 'today', or a fixed ISO date. An explicit as_of argument always wins.",
+    "order_sources": ["manual"],
+    "reference_date": "latest_order_date",
+    "merge_same_day_occasions": true
+  },
+
+  "eligibility": {
+    "_comment": "Only products the customer has bought are ever recommended. exclude_live_subscriptions: hide products the customer already subscribes to (subscriptions.status not in inactive_subscription_statuses).",
+    "only_replenishable": true,
+    "min_purchase_occasions": 1,
+    "exclude_live_subscriptions": true,
+    "inactive_subscription_statuses": ["CANCELLED"]
+  },
+
+  "weighted_median": {
+    "_comment": "Recency weighting of purchase intervals: weight = 0.5 ** (age / half_life_intervals), age 0 = newest interval. null half-life = equal weights (plain weighted median). max_intervals: only the most recent N intervals are used (null = all).",
+    "half_life_intervals": 6,
+    "max_intervals": null
+  },
+
+  "weights": {
+    "_comment": "FinalScore = due * DueScore + habit * HabitScore + consistency * ConsistencyScore. Must sum to 1.",
+    "due": 0.50,
+    "habit": 0.30,
+    "consistency": 0.20
+  },
+
+  "fallbacks": {
+    "_comment": "Scores used inside FinalScore when the real score cannot be measured. The API still reports the real score as null and lists the fallback in fallbacks_applied.",
+    "due_score": 0.0,
+    "consistency_score": 0.5
+  },
+
+  "habit": {
+    "_comment": "HabitScore = min(1, purchase_occasions / threshold). category_field: the products column whose value selects the threshold. consumption_pattern is used because BigBasket's 'category' lumps daily milk with fortnightly butter. Unknown or missing values use default.",
+    "category_field": "consumption_pattern",
+    "thresholds": {
+      "daily_perishable": 10,
+      "fresh_produce": 10,
+      "chilled_dairy": 6,
+      "pantry_snack": 6,
+      "monthly_staple": 4,
+      "personal_care": 4,
+      "household_cleaning": 4
+    },
+    "default_threshold": 6
+  },
+
+  "consistency": {
+    "_comment": "ConsistencyScore = 1 / (1 + CV), CV = std(intervals) / mean(intervals). std_ddof 1 = sample standard deviation.",
+    "min_intervals": 2,
+    "std_ddof": 1
+  },
+
+  "replenishment_status": {
+    "_comment": "Classified from DueScore. At DueScore 1, DueRatio (days since last purchase / expected interval) separates Due from Overdue: Overdue once DueRatio > overdue_ratio.",
+    "due_soon_min": 0.50,
+    "approaching_due_min": 0.80,
+    "overdue_ratio": 1.25
+  },
+
+  "lapse": {
+    "_comment": "Lapsed habits. DueScore is capped at 1, so on its own a product the customer stopped buying months ago would rank as high as one due today. Once days since the last purchase exceed lapse_start = max(start_ratio * expected_interval, expected_interval + min_extra_days), the product is 'Lapsed' and FinalScore is multiplied by lapse_factor = max(floor, 0.5 ** (intervals_past_lapse_start / half_life_intervals)). min_extra_days keeps a short holiday from marking fast products (milk every 2 days) as lapsed. enabled=false restores the plain formula.",
+    "enabled": true,
+    "start_ratio": 2.0,
+    "min_extra_days": 7,
+    "half_life_intervals": 1.0,
+    "floor": 0.1
+  },
+
+  "quantity": {
+    "_comment": "Suggested quantity = median units per purchase occasion, rounded half up, never below min_quantity.",
+    "min_quantity": 1
+  },
+
+  "explanations": {
+    "_comment": "Wording thresholds only; they never change scores.",
+    "strong_habit_min": 1.0,
+    "moderate_habit_min": 0.5,
+    "very_regular_min": 0.75,
+    "fairly_regular_min": 0.6
+  },
+
+  "limits": {
+    "default_limit": 10,
+    "max_limit": 50
+  }
+}

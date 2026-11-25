@@ -15,13 +15,18 @@ data foundation for that recommender:
 - **Phase 2: synthetic transactions.** Generates a reproducible 180-day purchase
   history for 100 synthetic customers buying those 20 products (see
   [Phase 2](#phase-2-synthetic-transaction-data)).
-- **Phase 3: PostgreSQL integration (current phase).** Loads all five datasets
+- **Phase 3: PostgreSQL integration.** Loads all five datasets
   into a validated relational schema (SQLAlchemy models, constraints, a
   transactional and repeatable loader, and a validator). See
   [Phase 3](#phase-3-postgresql-database-integration).
+- **Phase 4: recommendation engine and API (current phase).** A framework-independent
+  engine that ranks each customer's replenishment needs, plus a FastAPI service that
+  exposes it to the React frontend. It runs next to the teammate's Flask app
+  (subscriptions and WhatsApp notifications). See
+  [Phase 4](#phase-4-recommendation-engine-and-fastapi).
 
-There is no recommendation algorithm, API, subscription logic or frontend yet.
-Those come in later phases.
+The subscription and notification module (Flask, `app/`) is developed separately; see
+`docs/SUBSCRIPTIONS_CONTEXT.md`. There is no frontend in this repository yet.
 
 ---
 
@@ -85,7 +90,13 @@ maf/                               <- project root (the existing workspace)
 │   ├── connection.py              <- engine, sessions, .env loading, connectivity check
 │   ├── models.py                  <- SQLAlchemy ORM models for the 5 tables
 │   └── sources.py                 <- CSV -> table mapping and strict validation
+├── app/                           <- Flask app: subscriptions, orders, WhatsApp (teammate's module)
+├── run.py                         <- Flask entry point
+├── recommendation_engine/         <- Phase 4: recommendation logic (no web framework)
+├── recommendation_api/            <- Phase 4: FastAPI HTTP layer for the engine
+├── docs/SUBSCRIPTIONS_CONTEXT.md  <- subscription module context
 ├── scripts/
+│   ├── run_recommendations.py     <- Phase 4: run the engine from the terminal
 │   ├── inspect_dataset.py         <- explore and search the catalogue
 │   ├── preprocess_catalogue.py    <- Phase 1: selection, cleaning, validation and export
 │   ├── generate_synthetic_transactions.py  <- Phase 2: synthetic customers and orders
@@ -759,3 +770,593 @@ python scripts/validate_database.py    # see the shared data without changing it
   activity; restore them from the dashboard. This dataset (about 11 MB) is well
   within the free 500 MB.
 
+
+---
+
+## Phase 4: recommendation engine and FastAPI
+
+For each customer, the engine ranks the products they already buy by how much they
+are likely to need them now. For each product it also suggests a reorder quantity and
+gives a plain-language explanation. FastAPI exposes it to the React frontend. The
+teammate's Flask app keeps handling subscriptions and WhatsApp notifications.
+
+### Architecture
+
+```
+React (Vite :5173)
+   │  GET /api/v1/recommendations/{customer_id}         ─── other features ───►  Flask (:5001)
+   ▼                                                                             app/ (subscriptions,
+FastAPI  recommendation_api/   (:8000)                                                orders, WhatsApp)
+   routes.py ─► service.py ─► RecommendationEngine ◄── scripts/run_recommendations.py      │
+                                   │      (one algorithm, two callers)                     │
+                                   ▼                                                       │
+                     PurchaseRepository (injected)                                         │
+                     └─ SqlPurchaseRepository ─► database/ (connection.py, models.py) ◄────┘
+                                                        │
+                                                        ▼
+                                              Supabase PostgreSQL (DATABASE_URL)
+```
+
+| Layer | Location | Responsibility |
+|---|---|---|
+| Engine | `recommendation_engine/` | All business logic: occasions, intervals, scores, ranking, quantity, explanations. No Flask/FastAPI imports (a test enforces this). |
+| Repository | `recommendation_engine/data/` | The `PurchaseRepository` interface; `SqlPurchaseRepository` (PostgreSQL) and `InMemoryPurchaseRepository` (tests, offline). |
+| Shared DB layer | `database/` | The existing `make_engine()` / `.env` handling and table models, reused unchanged. |
+| HTTP | `recommendation_api/` | Routes, Pydantic schemas, service, middleware, error handling, CORS, settings. No scoring. |
+| Auth | `customer_auth/` | Signed, expiring bearer tokens shared by FastAPI and Flask (no web framework inside). |
+| Auth adapters | `recommendation_api/auth.py`, `app/auth.py` | FastAPI dependency; Flask `@login_required` decorator. |
+| CLI | `scripts/run_recommendations.py` | Same engine, no web server. |
+
+```
+recommendation_engine/
+├── __init__.py              public API: RecommendationEngine, load_config, repositories, errors
+├── engine.py                the pipeline (orchestrates the modules below)
+├── errors.py                InvalidRequestError, CustomerNotFoundError, DataSourceError, ConfigError
+├── results.py               Recommendation / RecommendationResult dataclasses
+├── config/
+│   ├── __init__.py          loads and validates the JSON (weights sum to 1, thresholds ordered, ...)
+│   └── scoring_config.json  every tunable number
+├── data/
+│   ├── purchase_data.py     PurchaseRecord, ProductInfo, PurchaseOccasion
+│   ├── repository.py        PurchaseRepository protocol + InMemoryPurchaseRepository
+│   └── sql_repository.py    SqlPurchaseRepository (orders ⋈ order_items, products, subscriptions)
+├── processing/
+│   ├── purchase_occasions.py   order lines -> purchase occasions, data-quality report
+│   ├── purchase_intervals.py   days between occasions
+│   └── weighted_median.py      recency-weighted median
+├── scoring/
+│   ├── due_score.py  habit_score.py  consistency_score.py
+│   ├── lapse.py                lowers the ranking of abandoned habits
+│   ├── replenishment_status.py
+│   ├── ranking.py              final score + deterministic ranking
+│   └── quantity_estimator.py
+└── output/
+    ├── explanation_generator.py
+    └── recommendation_formatter.py   JSON-ready dicts (API) and text table (CLI)
+
+recommendation_api/
+├── main.py          ASGI entry point (`app = create_app()`)
+├── factory.py       create_app(): FastAPI app, CORS, middleware, routes
+├── routes.py        recommendations (/me and /{customer_id}), auth (demo-login, me), health
+├── auth.py          bearer-token dependency, "own data only" check
+├── service.py       calls the engine, returns the Pydantic response
+├── schemas.py       Pydantic response and error models
+├── dependencies.py  builds the service once, on the first request
+├── middleware.py    request ID, timing, logging, centralized error handling
+├── settings.py      REC_API_* environment variables
+└── __main__.py      `python -m recommendation_api`
+
+customer_auth/
+└── tokens.py        AuthSettings, TokenService (issue/verify), auth errors
+app/auth.py          Flask adapter: @login_required sets g.customer_id (new file in app/)
+```
+
+The FastAPI package is not called `app/` because that name is the Flask package.
+There are no separate `controllers/`, `repositories/` or `models/` folders for the
+API: the routes are thin, the repository lives with the engine (one implementation),
+and the Pydantic schemas are the API models.
+
+### The existing Flask backend, and how the two coexist
+
+- **Flask (`app/`, teammate):** `create_app()` in `app/__init__.py` registers the
+  `subscriptions`, `orders` and `notifications` blueprints and `GET /api/health`. It
+  reads `FLASK_SECRET_KEY` and `DATABASE_URL` through `app/config.py`, uses one scoped
+  SQLAlchemy session per request (`app/db.py`, built on `database.connection.make_engine`),
+  and keeps its own models for `subscriptions`, `delivery_occurrences`, `inventory` and
+  `whatsapp_messages`.
+- **Two processes, two ports.** Flask: `flask --app run run --port 5001`.
+  FastAPI: `uvicorn recommendation_api.main:app --port 8000`. On macOS, port 5000 (the
+  `run.py` default) is often taken by AirPlay Receiver (*System Settings → General →
+  AirDrop & Handoff*), so 5001 is used in these docs.
+- **No imports between `app/` and `recommendation_*`.** Both use the shared `database/`
+  package. The engine reads the Flask module's `subscriptions` table with plain SQL,
+  so it never imports Flask models. If the table doesn't exist (e.g. a local
+  database), no products count as subscribed.
+- **One `.env`, separate variable names.** Both read `DATABASE_URL` and
+  `AUTH_SECRET_KEY`. Flask also reads `FLASK_SECRET_KEY`; FastAPI reads the optional
+  `REC_API_*` variables.
+- **One login for both apps.** A token from `POST /api/v1/auth/demo-login` works on
+  the FastAPI routes and on any Flask route decorated with `app.auth.login_required`.
+- **No dependency conflicts.** Flask (Werkzeug/Jinja2/itsdangerous) and FastAPI
+  (Starlette/Pydantic) share no pinned packages; `pip check` is clean.
+- **No existing Flask files were changed.** The only addition inside `app/` is the
+  new `app/auth.py`, which `docs/SUBSCRIPTIONS_CONTEXT.md` reserves for the auth
+  decorator.
+
+### Data flow for one request
+
+1. The bearer token is verified (401 if missing, invalid or expired) and must belong
+   to the requested customer (403 otherwise).
+2. The route validates `customer_id`, `limit` and `as_of`, then calls the service.
+3. The engine checks the customer exists (404 if not) and fixes the reference date.
+4. `SqlPurchaseRepository` reads the customer's history: `orders ⋈ order_items` where
+   `orders.source IN history.order_sources` (default `manual`). It also reads catalogue
+   rows for the purchased products and any live subscriptions. All queries for one
+   request share one pooled connection.
+5. Processing, scoring, ranking and explanations run in Python, and the service
+   returns the Pydantic response.
+
+### Methodology
+
+**Purchase occasions.** One `orders` row is one checkout. `order_items` has at most
+one line per product per order. Rules:
+- All lines of one product in one order count as one occasion, with quantities added
+  up. This holds even if that uniqueness rule is ever relaxed.
+- Orders of the same product on the same calendar day are merged (configurable), so
+  a second checkout for a forgotten item doesn't create a 0-day interval.
+- Skipped rows are counted in a data-quality report: exact duplicates, unparseable
+  dates, dates after the reference date, and rows for other customers.
+- Rows with invalid quantities still count for timing, but not for quantity.
+
+**Intervals.** Days between consecutive occasions, oldest first. Zero or negative gaps
+are dropped rather than kept as artificial intervals. One occasion gives no intervals.
+
+**Expected interval: recency-weighted median.** For interval `i`, where age 0 is the
+newest:
+
+    weight = 0.5 ** (age / half_life_intervals)        (half_life_intervals = 6)
+
+The weighted median is the first sorted value whose cumulative weight reaches half
+the total. If it lands exactly on half, it's the average with the next value, so equal
+weights reproduce the ordinary median.
+- *Why a median:* one vacation gap doesn't distort it.
+- *Why recency weights:* the estimate follows habit changes.
+- *Backtest:* predicting each customer-product's latest interval from the earlier ones
+  (711 pairs with at least 4 intervals) gave a median absolute error of 25% at
+  half-life 6, 27% unweighted and 33% at half-life 1. The synthetic habits don't drift
+  over time, so this data can't show the benefit of recency weighting; half-life 6 is
+  a moderate choice for real data.
+
+**Due Score.** `DueRatio = DaysSinceLastPurchase / ExpectedInterval`, and
+`DueScore = min(1, max(0, DueRatio))`.
+- Examples for a 3-day interval: 1 day → 0.33, 2 → 0.67, 3 → 1.00, 5 → 1.00.
+- It is `null` (not measured) when there is no expected interval (fewer than 2
+  occasions), the interval is ≤ 0, or the last purchase date is missing or later than
+  the reference date.
+
+**Habit Score.** `min(1, PurchaseOccasions / threshold)`, where the threshold depends on
+the product's `consumption_pattern`. That column was chosen over BigBasket's
+`category`, which puts daily milk and fortnightly butter in the same group:
+
+| consumption_pattern | products | threshold |
+|---|---|---|
+| daily_perishable | milk, curd, bread, eggs | 10 |
+| fresh_produce | onion, potato, tomato | 10 |
+| chilled_dairy | butter | 6 |
+| pantry_snack | biscuits, instant noodles | 6 |
+| monthly_staple | rice, atta, cooking oil, tea, coffee | 4 |
+| personal_care | shampoo, toothpaste, bathing soap | 4 |
+| household_cleaning | detergent, dishwashing | 4 |
+| *(missing / other)* | | 6 (default) |
+
+Both the category field (`habit.category_field`) and the thresholds are configuration,
+not code.
+
+**Consistency Score.** `CV = std / mean` of the intervals, using the **sample** standard
+deviation (ddof = 1; the population formula understates spread in short histories).
+`ConsistencyScore = 1 / (1 + CV)`.
+- It needs at least 2 intervals (3 occasions).
+- With less history, the score is `null` with `consistency_status =
+  insufficient_history`. It is never reported as a perfect 1.
+
+**Lapse factor (abandoned habits).** The Due Score is capped at 1, so on its own
+"2 days late" and "2 months late" look identical. A customer who stopped buying would
+then see every old product as "Overdue" at the top of the list. The lapse factor
+fixes this without changing the Due Score:
+
+    lapse_start  = max(2.0 × ExpectedInterval, ExpectedInterval + 7 days)
+    lapse_factor = 1                                              if DaysSince ≤ lapse_start
+                 = max(0.1, 0.5 ^ ((DaysSince − lapse_start) / ExpectedInterval))   otherwise
+
+- The factor halves for every expected interval past the lapse start.
+- The `+ 7 days` keeps a one-week holiday from marking fast products as lapsed. Milk
+  bought every 2 days lapses after 9 days, not 4.
+- The 0.1 floor keeps lapsed products ordered among themselves.
+- Examples: milk (every 2 days) not bought for 40 days → factor 0.1 and status
+  **Lapsed**; rice (every 18 days) not bought for 44 days → 0.74.
+- For the lapsed customer CUST-0002, the shampoo that's genuinely due now ranks first,
+  and the milk they stopped buying ranks last. Active customers' rankings don't change.
+- All values are under `lapse` in the config; `enabled: false` restores the plain
+  formula.
+
+**Final Score.** `(0.50 × Due + 0.30 × Habit + 0.20 × Consistency) × LapseFactor`.
+- The weights are configurable and must sum to 1, and the lapse factor is in
+  [0.1, 1], so the score stays in [0, 1]. The response includes `lapse_factor`.
+- A score that couldn't be measured is replaced by its fallback *inside this formula
+  only*: Due → 0.0, Consistency → 0.5. The response keeps the real value as `null` and
+  lists the substitutions in `fallbacks_applied`.
+- Quantity is never part of the score.
+
+**Replenishment status** (from the Due Score; thresholds in the config):
+
+| Due Score | Status |
+|---|---|
+| < 0.50 | Not Due Yet |
+| 0.50 – 0.79 | Due Soon |
+| 0.80 – 0.99 | Approaching Due |
+| 1.00, DueRatio ≤ 1.25 | Due |
+| 1.00, DueRatio > 1.25 | Overdue |
+| past the lapse start (see above) | Lapsed |
+| not measurable | Insufficient History |
+
+Status is a label only. Products that aren't due yet are still ranked, and stay in the
+list if their final score earns it.
+
+**Suggested quantity.** The median units per occasion, rounded half up, at least 1.
+Examples: `1,1,2,1,1 → 1`, `5,5,10,5 → 5`. The unit is one pack of the product's
+`pack_size` (e.g. 3 × "500 ml"). It is `null` if no occasion has a valid quantity.
+
+**Eligibility and ranking.**
+- Only products the customer has bought are candidates; there are no never-purchased
+  "filler" products.
+- A candidate must be in the catalogue and `replenishable`, and must not have a live
+  subscription: `subscriptions.status` not in `inactive_subscription_statuses`
+  (default `CANCELLED`, so paused subscriptions also hide the product).
+- All candidates are scored first, then sorted by final score (descending) and
+  `product_id` (ascending, to break ties), and only then cut to `limit`.
+- Fewer eligible products than `limit` means a shorter list.
+
+**Explanations** are composed from each recommendation's own numbers:
+- how established the habit is (Habit Score, purchase count);
+- how regular it is (Consistency Score; irregular histories are called a rough
+  estimate);
+- timing (days since the last purchase vs the expected interval, and the status).
+
+With a single purchase, the text says there isn't enough history instead of implying
+a pattern. Lapsed products say the item may no longer be part of the customer's
+routine and is ranked lower until they buy it again.
+
+**Why subscription orders are excluded from history.** Their cadence comes from the
+subscription itself, so learning from them would just reinforce our own earlier
+suggestion. `history.order_sources` controls this.
+
+### Configuration (`recommendation_engine/config/scoring_config.json`)
+
+| Key | Default | Meaning |
+|---|---|---|
+| `history.order_sources` | `["manual"]` | `orders.source` values treated as purchase history |
+| `history.reference_date` | `latest_order_date` | "today" for due calculations: newest history order (the synthetic data ends 2026-11-15), `today`, or a fixed ISO date |
+| `history.merge_same_day_occasions` | `true` | merge same-day orders of a product |
+| `eligibility.only_replenishable` | `true` | require `products.replenishable` |
+| `eligibility.min_purchase_occasions` | `1` | minimum occasions to be a candidate |
+| `eligibility.exclude_live_subscriptions` / `inactive_subscription_statuses` | `true` / `["CANCELLED"]` | hide already-subscribed products |
+| `weighted_median.half_life_intervals` / `max_intervals` | `6` / `null` | recency weighting |
+| `weights.due/habit/consistency` | `0.5/0.3/0.2` | final score weights (must sum to 1) |
+| `fallbacks.due_score` / `consistency_score` | `0.0` / `0.5` | used in the final score when not measurable |
+| `habit.category_field`, `habit.thresholds`, `habit.default_threshold` | see above | habit thresholds |
+| `consistency.min_intervals` / `std_ddof` | `2` / `1` | consistency history requirement, sample std |
+| `replenishment_status.*` | `0.5` / `0.8` / `1.25` | status thresholds |
+| `lapse.enabled` / `start_ratio` / `min_extra_days` / `half_life_intervals` / `floor` | `true` / `2.0` / `7` / `1.0` / `0.1` | abandoned-habit penalty (`start_ratio` must be ≥ the overdue ratio) |
+| `quantity.min_quantity` | `1` | smallest suggested quantity |
+| `explanations.*` | | wording thresholds (never affect scores) |
+| `limits.default_limit` / `max_limit` | `10` / `50` | API/CLI limits |
+
+The config is validated on load: weights must sum to 1, thresholds must be in order,
+and values must be in range. A bad edit fails immediately with a clear message.
+
+### Environment variables
+
+| Variable | Used by | Notes |
+|---|---|---|
+| `DATABASE_URL` | engine, Flask, scripts | the shared Supabase database (see above) |
+| `TEST_DATABASE_URL` | tests | local test database only |
+| `FLASK_SECRET_KEY` | Flask | |
+| `AUTH_SECRET_KEY` | FastAPI, Flask | **required**, ≥ 32 characters; signs login tokens. Same value everywhere tokens must be accepted. The `.env.example` placeholder is rejected |
+| `AUTH_TOKEN_MAX_AGE_SECONDS` | FastAPI, Flask | token lifetime, default 604800 (7 days) |
+| `AUTH_DEMO_LOGIN` | FastAPI | `true` enables the password-less demo login. Default `false`; never enable in production |
+| `REC_API_CORS_ORIGINS` | FastAPI | comma-separated; default `http://localhost:5173,http://localhost:3000` |
+| `REC_API_LOG_LEVEL`, `REC_API_DOCS`, `REC_API_HOST`, `REC_API_PORT`, `REC_API_SCORING_CONFIG` | FastAPI | optional; see `.env.example` |
+
+### Install and run
+
+```bash
+pip install -r requirements.txt            # adds fastapi, uvicorn, httpx
+
+# 1) Engine only (no server). Read-only.
+python scripts/run_recommendations.py --customer-id CUST-0001
+python scripts/run_recommendations.py --customer-id CUST-0001 --limit 5 --as-of 2026-11-01
+python scripts/run_recommendations.py --customer-id CUST-0001 --json   # same JSON as the API
+
+# 2) FastAPI (terminal 1). Needs AUTH_SECRET_KEY in .env (refuses to start without it)
+uvicorn recommendation_api.main:app --reload --port 8000
+#    or: python -m recommendation_api            (uses REC_API_HOST / REC_API_PORT)
+#    interactive docs: http://localhost:8000/docs
+
+# 3) Flask (terminal 2), unchanged
+flask --app run run --port 5001
+```
+
+The engine can also be called directly from Python:
+
+```python
+from recommendation_engine import RecommendationEngine, InMemoryPurchaseRepository
+result = RecommendationEngine().generate_recommendations(customer_id="CUST-0001", limit=10)
+# or with any repository object, e.g. for tests:
+RecommendationEngine(repository=InMemoryPurchaseRepository(customers, records, products))
+```
+
+### Authentication
+
+Every recommendation route needs `Authorization: Bearer <token>`.
+
+- **Token format.** Tokens are signed with `AUTH_SECRET_KEY` (itsdangerous, already a
+  Flask dependency). They contain only the customer ID and the issue time, and expire
+  after `AUTH_TOKEN_MAX_AGE_SECONDS`.
+- **Not encrypted.** A token is signed, not encrypted, so never put secrets in it.
+- **Ownership.** A customer can only read their own recommendations. Another
+  customer's ID returns **403**.
+- **Same token for Flask.** The token works on the Flask app too: decorate a view with
+  `app.auth.login_required` and read `g.customer_id`.
+- **Webhooks.** WhatsApp webhooks don't use tokens. They identify the customer by phone
+  number and verify Meta's signature.
+
+**Demo login.** There are no passwords for the 100 synthetic customers yet. With
+`AUTH_DEMO_LOGIN=true`, a token can be requested for any existing customer:
+
+```bash
+curl -X POST localhost:8000/api/v1/auth/demo-login \
+     -H 'Content-Type: application/json' -d '{"customer_id": "CUST-0001"}'
+# {"access_token": "...", "token_type": "bearer", "expires_in": 604800, "customer_id": "CUST-0001"}
+
+curl localhost:8000/api/v1/recommendations/me -H "Authorization: Bearer <access_token>"
+```
+
+- With demo login disabled, the route answers 404, as if it didn't exist.
+- A real login (for example a one-time code sent to `customers.phone_e164` on WhatsApp)
+  only needs to replace this one endpoint. The tokens, the dependency and the Flask
+  decorator stay the same.
+- In `/docs`, click **Authorize** and paste the token to try the endpoints.
+
+### API
+
+| Endpoint | Auth | Purpose |
+|---|---|---|
+| `GET /api/v1/recommendations/me` | token | recommendations for the logged-in customer (use this from React) |
+| `GET /api/v1/recommendations/{customer_id}` | token for that customer | same, with an explicit ID |
+| `POST /api/v1/auth/demo-login` | none, demo only | get a token for a customer ID |
+| `GET /api/v1/auth/me` | token | `{"customer_id": ...}` of the caller |
+| `GET /api/v1/health` | none | liveness check, no database |
+
+Query parameters of the recommendation routes:
+
+| Parameter | Rules |
+|---|---|
+| `customer_id` | 1–64 characters; must match the token (403) and exist (404) |
+| `limit` | optional, 1–50, default 10 |
+| `as_of` | optional date. Evaluate "as of" that day: later purchases are ignored. Useful for demos |
+
+Example (real output, `?limit=1`):
+
+```json
+{
+  "customer_id": "CUST-0001",
+  "reference_date": "2026-11-15",
+  "total_recommendations": 1,
+  "total_eligible_products": 10,
+  "recommendations": [
+    {
+      "rank": 1,
+      "product_id": "bb-242671",
+      "product_name": "GoodLife UHT Treated Toned Milk",
+      "brand": "Nandini",
+      "product_type": "milk",
+      "category": "Bakery, Cakes & Dairy",
+      "product_image": "https://www.bigbasket.com/media/uploads/p/l/242671_1-nandini-goodlife-toned-milk.jpg",
+      "pack_size": "500 ml",
+      "price": 28.0,
+      "discount_price": 28.0,
+      "purchase_count": 70,
+      "first_purchase_date": "2026-06-13",
+      "last_purchase_date": "2026-11-13",
+      "days_since_last_purchase": 2,
+      "expected_purchase_interval": 2.0,
+      "due_ratio": 1.0,
+      "due_score": 1.0,
+      "habit_score": 1.0,
+      "habit_category": "daily_perishable",
+      "habit_threshold": 10.0,
+      "consistency_score": 0.805,
+      "consistency_status": "sufficient_history",
+      "final_score": 0.961,
+      "lapse_factor": 1.0,
+      "fallbacks_applied": [],
+      "replenishment_status": "Due",
+      "suggested_quantity": 3,
+      "explanation": "You buy this regularly (70 times so far), at very regular intervals. You usually reorder about every 2 days and last bought it 2 days ago, so it is due for a reorder now."
+    }
+  ]
+}
+```
+
+Errors always have the same shape, never include stack traces, SQL or connection
+details, and carry the `X-Request-ID` that also appears in the server log:
+
+```json
+{"error": {"code": "customer_not_found", "message": "Customer 'CUST-9999' was not found.", "request_id": "be42cb5e9da14dcf"}}
+```
+
+| Status | `code` | When |
+|---|---|---|
+| 401 | `unauthorized`, `token_expired` | missing, invalid or expired token (`WWW-Authenticate: Bearer`) |
+| 403 | `forbidden` | token belongs to another customer |
+| 404 | `customer_not_found`, `not_found` | unknown customer / route |
+| 422 | `validation_error`, `invalid_request` | bad `limit`, `as_of` or `customer_id` (`details` lists fields) |
+| 503 | `service_unavailable` | database unreachable or misconfigured |
+| 500 | `internal_error` | unexpected bug (details only in the server log) |
+
+Every response has `X-Request-ID` and `X-Process-Time-Ms` headers. Tokens are never
+logged.
+
+### Using it from React
+
+```js
+const API = import.meta.env.VITE_RECOMMENDATION_API ?? "http://localhost:8000";
+
+export async function demoLogin(customerId) {
+  const res = await fetch(`${API}/api/v1/auth/demo-login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ customer_id: customerId }),
+  });
+  const body = await res.json();
+  if (!res.ok) throw new Error(body.error?.message ?? "Login failed");
+  return body.access_token;      // keep it in memory or sessionStorage
+}
+
+export async function fetchRecommendations(token, limit = 10) {
+  const res = await fetch(`${API}/api/v1/recommendations/me?limit=${limit}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  const body = await res.json();
+  if (res.status === 401) throw new Error("SESSION_EXPIRED");   // send the user back to login
+  if (!res.ok) throw new Error(body.error?.message ?? "Request failed");
+  return body.recommendations;   // already ranked: render in order
+}
+```
+
+- Send the same token to the Flask API (subscriptions, orders).
+
+- Show `product_image`, `product_name` and `pack_size`.
+- Show a badge from `replenishment_status` and the `explanation` text. "Lapsed" items
+  are best shown in a separate "buy again?" section.
+- Use `suggested_quantity` (packs of `pack_size`) and `expected_purchase_interval`
+  (days) to pre-fill the subscribe form: these are the recommended quantity and
+  frequency.
+- Add the frontend origin to `REC_API_CORS_ORIGINS` if it isn't a default one.
+
+### Tests
+
+```bash
+pytest tests/test_recommendation_engine.py   # engine maths and rules, no database
+pytest tests/test_recommendation_api.py      # FastAPI via TestClient + in-memory data
+pytest tests/test_recommendation_sql.py      # needs TEST_DATABASE_URL (local), else skipped
+pytest tests/test_customer_auth.py           # tokens + Flask decorator, no database
+```
+
+What the tests cover:
+- the spec examples: intervals, Due Score, and the quantity medians;
+- weighted-median edge cases, and duplicate and dirty records;
+- ranking all candidates before applying the limit, and deterministic ties;
+- the no-filler rule, and the exclusion of non-replenishable and subscribed products;
+- that quantity never affects the score, and that insufficient history is handled
+  honestly;
+- config validation and API error shapes, and that internal errors don't leak
+  details;
+- CORS and request IDs;
+- the lapse factor, and that a lapsed habit ranks below a currently due product;
+- auth: missing, forged, wrong-secret, Basic and expired tokens give 401; another
+  customer's ID gives 403; the demo-login flow; demo login disabled gives 404; the
+  app refuses to start without a secret; placeholder secrets are rejected; a token
+  issued by FastAPI is accepted by the Flask decorator;
+- that the engine imports neither Flask nor FastAPI;
+- that the SQL repository and an in-memory repository built from the CSVs give
+  identical recommendations;
+- that subscription orders are excluded from history.
+
+### Assumptions and known limitations
+
+- **Reference date.** The synthetic history ends on 2026-11-15, so "today" defaults to
+  the newest history order. Use `as_of`, or set `history.reference_date` to `today`,
+  once real orders flow in.
+- **Lapse thresholds are a judgement call.** The defaults (2× the interval, plus 7 days
+  for fast products) were checked against the synthetic segments: the lapsed segment
+  has 88 lapsed products, the regular segment 14. Tune them with real data.
+- **Demo login only.** Anyone who can reach the API with `AUTH_DEMO_LOGIN=true` can act
+  as any customer. Fine for the demo; switch it off and add a real login before real
+  users. Tokens can't be revoked individually; rotating `AUTH_SECRET_KEY` logs
+  everyone out.
+- **Latency.** About 0.8 s per request from India to the Singapore Supabase region,
+  mostly network round trips. The first request also opens the connection pool.
+- **Subscription feedback.** Skips, delays and edits from `delivery_occurrences` are not
+  used yet; they're planned as suggested adjustments for existing subscriptions.
+
+
+## Frontend: recommendation page (`frontend/`)
+
+A React + Vite storefront page for the recommendation API.
+
+1. **Sign in.**
+   - Type a customer ID exactly as stored in Supabase (`customers.customer_id`, e.g.
+     `CUST-0001`; case-sensitive).
+   - It calls the demo login (no password), so the API must run with
+     `AUTH_DEMO_LOGIN=true`.
+   - Unknown IDs get a clear error. The token is kept in `sessionStorage`.
+2. **Your top 10 reorder picks.** The customer's recommendations in rank order, in a
+   grid that scrolls inside its own panel. Each card shows:
+   - the rank and a status badge (Overdue, Due now, Due very soon, Coming up, Stocked up,
+     Haven't bought lately, Bought once);
+   - the subscriber price, with the regular price crossed out;
+   - timing, usual frequency and usual quantity;
+   - a match bar (the final score) and the engine's explanation under **Why this?**;
+   - a **Subscribe now** button.
+
+   **Switch customer** (top right) signs out and returns to step 1. Products the
+   customer already subscribes to are left out by the engine, so a customer can see
+   fewer than 10.
+3. **Subscription page** (`#/subscribe/<product_id>`). **Subscribe now** opens it.
+   - It shows the chosen product with the recommended quantity, frequency and price per
+     delivery.
+   - **This page is a placeholder.** The actual subscription flow belongs to the
+     subscriptions module and is still to be built. `src/pages/SubscriptionPage.jsx`
+     already receives the product and its recommended values for pre-filling.
+   - The browser's back button returns to the recommendations.
+
+```bash
+# terminal 1: recommendation API. Use the project's .venv: other Python installs
+# (e.g. Anaconda) may lack the PostgreSQL driver and fail with HTTP 500.
+source .venv/bin/activate
+uvicorn recommendation_api.main:app --reload --port 8000
+# terminal 2: frontend
+cd frontend
+npm install        # first time only
+npm run dev        # http://localhost:5173
+```
+
+- The API URL comes from `VITE_RECOMMENDATION_API` (default `http://localhost:8000`;
+  see `frontend/.env.example`).
+- Port 5173 is already in the API's CORS allow-list.
+
+**States handled:**
+- loading skeletons;
+- an unknown customer ID;
+- an API that can't be reached (message and **Try again**);
+- an expired token (back to sign-in);
+- a customer without purchase history ("No recommendations yet").
+
+**Product images.** The dataset's `image_url`s point to BigBasket's CDN, which refuses
+requests from other sites (HTTP 403). Cards try the real image first and otherwise show
+an illustrated tile for the product's category.
+
+```
+frontend/src/
+├── App.jsx                      sign-in, recommendations, subscription page (hash routes)
+├── session.js                   token + selected product in sessionStorage
+├── api/client.js                fetch wrapper, standard error shape
+├── api/recommendations.js       demo login, /recommendations/me
+├── pages/LoginPage.jsx          customer ID sign-in
+├── pages/RecommendationsPage.jsx  top 10 in a scrollable grid
+├── pages/SubscriptionPage.jsx   placeholder for the subscription flow
+├── components/                  Header (Switch customer), ProductCard, ProductImage, States
+├── format.js                    prices, dates, status labels, timing text
+└── styles/app.css               design tokens + layout (responsive, reduced motion)
+```
