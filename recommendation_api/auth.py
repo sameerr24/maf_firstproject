@@ -8,7 +8,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from customer_auth import MissingTokenError, TokenService
 
 # auto_error=False: we raise our own errors so every 401 has the standard JSON shape.
-bearer_scheme = HTTPBearer(auto_error=False, description="Token from POST /api/v1/auth/demo-login")
+bearer_scheme = HTTPBearer(auto_error=False, description="JWT access token from phone OTP authentication")
 
 
 class ForbiddenError(Exception):

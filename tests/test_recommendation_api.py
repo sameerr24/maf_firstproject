@@ -1,6 +1,7 @@
 """FastAPI layer tests. The engine runs on an in-memory repository: no database, no server."""
 import pytest
 from fastapi.testclient import TestClient
+import datetime as dt
 
 from customer_auth import AuthSettings, TokenService
 from recommendation_api.factory import create_app
@@ -10,7 +11,7 @@ from recommendation_engine import DataSourceError, RecommendationEngine, load_co
 from recommendation_engine.output import result_to_dict
 from tests.recommendation_fixtures import REF, product, purchases, repo
 
-AUTH = AuthSettings(secret_key="t" * 40, max_age_seconds=3600, demo_login_enabled=True)
+AUTH = AuthSettings(secret_key="t" * 40, access_token_ttl_seconds=3600)
 SETTINGS = ApiSettings(auth=AUTH, cors_origins=("http://localhost:5173",), log_level="WARNING")
 TOKENS = TokenService(AUTH)
 
@@ -158,10 +159,7 @@ def test_protected_routes_require_a_valid_token(anon, url, headers, code):
 
 
 def test_expired_token(anon, monkeypatch):
-    token = TOKENS.issue("CUST-1")
-    import itsdangerous.timed
-    real_time = itsdangerous.timed.time.time
-    monkeypatch.setattr(itsdangerous.timed.time, "time", lambda: real_time() + AUTH.max_age_seconds + 5)
+    token = TOKENS.issue("CUST-1", now=dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=AUTH.access_token_ttl_seconds + 5))
     r = anon.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {token}"})
     assert r.status_code == 401 and r.json()["error"]["code"] == "token_expired"
 
@@ -176,24 +174,10 @@ def test_customers_only_see_their_own_recommendations(anon):
     assert r.status_code == 404 and r.json()["error"]["code"] == "customer_not_found"
 
 
-def test_demo_login_flow(anon):
-    r = anon.post("/api/v1/auth/demo-login", json={"customer_id": "CUST-1"})
-    assert r.status_code == 200
-    body = r.json()
-    assert body["token_type"] == "bearer" and body["customer_id"] == "CUST-1" and body["expires_in"] == 3600
-    headers = {"Authorization": f"Bearer {body['access_token']}"}
-    assert anon.get("/api/v1/auth/me", headers=headers).json() == {"customer_id": "CUST-1"}
-    assert anon.get("/api/v1/recommendations/CUST-1", headers=headers).status_code == 200
-    assert anon.post("/api/v1/auth/demo-login", json={"customer_id": "CUST-404"}).status_code == 404
-    assert anon.post("/api/v1/auth/demo-login", json={"customer_id": ""}).status_code == 422
-    assert anon.post("/api/v1/auth/demo-login", json={"customer_id": "CUST-1", "role": "admin"}).status_code == 422
-
-
-def test_demo_login_disabled_looks_like_no_route(engine):
-    settings = ApiSettings(auth=AuthSettings(secret_key="t" * 40), log_level="WARNING")
-    client = TestClient(create_app(settings, service=RecommendationService(engine)))
-    r = client.post("/api/v1/auth/demo-login", json={"customer_id": "CUST-1"})
-    assert r.status_code == 404 and r.json()["error"]["code"] == "not_found"
+def test_customer_id_demo_login_route_is_removed(anon):
+    response = anon.post("/api/v1/auth/demo-login", json={"customer_id": "CUST-1"})
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "not_found"
 
 
 def test_app_refuses_to_start_without_auth(monkeypatch):

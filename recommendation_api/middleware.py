@@ -18,8 +18,11 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from sqlalchemy.exc import SQLAlchemyError
 
 from customer_auth import AuthError
+from customer_auth.msg91 import MSG91Unavailable
+from customer_auth.service import PhoneNotRegistered, RateLimitExceeded
 from database.connection import DatabaseConfigError
 from recommendation_api.auth import ForbiddenError
 from recommendation_engine.errors import ConfigError, CustomerNotFoundError, DataSourceError, InvalidRequestError
@@ -71,6 +74,14 @@ def register_exception_handlers(app: FastAPI) -> None:
     async def unauthorized(request: Request, exc: AuthError):
         response = error_response(request, 401, exc.code, str(exc))
         response.headers["WWW-Authenticate"] = "Bearer"
+        if request.url.path == "/api/v1/auth/refresh":
+            response.delete_cookie(
+                "smart_reorder_refresh",
+                path="/api/v1/auth",
+                secure=request.app.state.settings.auth.refresh_cookie_secure,
+                httponly=True,
+                samesite="strict",
+            )
         return response
 
     @app.exception_handler(ForbiddenError)
@@ -91,8 +102,27 @@ def register_exception_handlers(app: FastAPI) -> None:
         return error_response(request, 503, "service_unavailable",
                               "Recommendation data is temporarily unavailable. Please try again later.")
 
+    async def auth_unavailable(request: Request, exc: Exception):
+        log.error("authentication service unavailable request_id=%s (%s)",
+                  _request_id(request), type(exc).__name__)
+        return error_response(request, 503, "service_unavailable",
+                              "Authentication is temporarily unavailable. Please try again later.")
+
+    @app.exception_handler(PhoneNotRegistered)
+    async def phone_not_registered(request: Request, exc: PhoneNotRegistered):
+        return error_response(request, 404, "phone_not_registered",
+                              "No account is registered with this phone number.")
+
+    @app.exception_handler(RateLimitExceeded)
+    async def rate_limited(request: Request, exc: RateLimitExceeded):
+        response = error_response(request, 429, "rate_limited", str(exc))
+        response.headers["Retry-After"] = str(exc.retry_after)
+        return response
+
     for exc_type in (DataSourceError, DatabaseConfigError, ConfigError):
         app.add_exception_handler(exc_type, unavailable)
+    for exc_type in (MSG91Unavailable, SQLAlchemyError):
+        app.add_exception_handler(exc_type, auth_unavailable)
 
     @app.exception_handler(StarletteHTTPException)
     async def http_error(request: Request, exc: StarletteHTTPException):

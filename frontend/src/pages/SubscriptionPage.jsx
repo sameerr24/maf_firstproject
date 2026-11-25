@@ -4,7 +4,6 @@ import ProductImage from "../components/ProductImage.jsx";
 import {
   cancelSubscription, createSubscription, getDraft, listSubscriptions, skipNextDelivery, updateSubscription,
 } from "../api/subscriptions.js";
-import { clearSession, loadSession } from "../session.js";
 import { formatDate, formatPrice, plural } from "../format.js";
 import "../styles/subscriptions.css";
 
@@ -23,8 +22,8 @@ function recommendedEvery(rec) {
   return rec?.expected_purchase_interval == null ? null : Math.max(1, Math.round(rec.expected_purchase_interval));
 }
 
-export default function SubscriptionPage({ product, onBack }) {
-  const token = loadSession()?.token;
+export default function SubscriptionPage({ product, session, onSessionExpired, onBack }) {
+  const token = session?.token;
   const productId = product?.product_id;
   const [draft, setDraft] = useState(null);
   const [subs, setSubs] = useState(null);
@@ -34,12 +33,11 @@ export default function SubscriptionPage({ product, onBack }) {
   // 401 means the token expired or is invalid: sign in again (App shows the login page).
   const fail = useCallback((e) => {
     if (e.status === 401) {
-      clearSession();
-      window.location.reload();
+      onSessionExpired();
       return;
     }
     setError(e.message);
-  }, []);
+  }, [onSessionExpired]);
 
   const loadSubs = useCallback(
     () => listSubscriptions(token).then((d) => setSubs(d.subscriptions)).catch(fail), [token, fail]);

@@ -1,13 +1,14 @@
 """customer_auth tokens and the Flask adapter (app/auth.py). No database."""
 import pytest
 from flask import Flask, g
+import datetime as dt
 
 from customer_auth import (
     AuthConfigError, AuthSettings, ExpiredTokenError, InvalidTokenError, MissingTokenError, TokenService,
     bearer_token_from_header,
 )
 
-SETTINGS = AuthSettings(secret_key="s" * 40, max_age_seconds=60)
+SETTINGS = AuthSettings(secret_key="s" * 40, access_token_ttl_seconds=60)
 TOKENS = TokenService(SETTINGS)
 
 
@@ -28,10 +29,8 @@ def test_tampered_or_foreign_tokens_are_rejected():
 
 
 def test_expiry(monkeypatch):
-    token = TOKENS.issue("CUST-0001")
-    import itsdangerous.timed
-    real_time = itsdangerous.timed.time.time
-    monkeypatch.setattr(itsdangerous.timed.time, "time", lambda: real_time() + 61)
+    expired_at = dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=61)
+    token = TOKENS.issue("CUST-0001", now=expired_at)
     with pytest.raises(ExpiredTokenError):
         TOKENS.verify(token)
 
@@ -62,12 +61,10 @@ def test_settings_from_env(monkeypatch, tmp_path):
     from database import connection
     monkeypatch.setattr(connection, "ENV_FILE", tmp_path / "none.env")
     monkeypatch.setenv("AUTH_SECRET_KEY", "k" * 40)
-    monkeypatch.setenv("AUTH_TOKEN_MAX_AGE_SECONDS", "120")
-    monkeypatch.setenv("AUTH_DEMO_LOGIN", "true")
+    monkeypatch.setenv("AUTH_ACCESS_TOKEN_TTL_SECONDS", "120")
+    monkeypatch.setenv("AUTH_REFRESH_TOKEN_TTL_SECONDS", "7200")
     s = AuthSettings.from_env()
-    assert (s.max_age_seconds, s.demo_login_enabled) == (120, True)
-    monkeypatch.delenv("AUTH_DEMO_LOGIN")
-    assert AuthSettings.from_env().demo_login_enabled is False  # off unless explicitly enabled
+    assert (s.access_token_ttl_seconds, s.refresh_token_ttl_seconds) == (120, 7200)
     monkeypatch.delenv("AUTH_SECRET_KEY")
     with pytest.raises(AuthConfigError):
         AuthSettings.from_env()
@@ -106,9 +103,9 @@ def test_tokens_from_the_api_work_in_flask(flask_client):
     from recommendation_api.settings import ApiSettings
     from recommendation_engine import RecommendationEngine
     from tests.recommendation_fixtures import product, purchases, repo
-    api = create_app(ApiSettings(auth=AuthSettings(secret_key="s" * 40, demo_login_enabled=True), log_level="WARNING"),
+    api = create_app(ApiSettings(auth=AuthSettings(secret_key="s" * 40), log_level="WARNING"),
                      service=RecommendationService(RecommendationEngine(
                          repository=repo(purchases("CUST-0007", "A", [3]), [product("A")], customers=("CUST-0007",)))))
-    token = TestClient(api).post("/api/v1/auth/demo-login", json={"customer_id": "CUST-0007"}).json()["access_token"]
+    token = api.state.token_service.issue("CUST-0007")
     r = flask_client.get("/private", headers={"Authorization": f"Bearer {token}"})
     assert r.get_json() == {"customer_id": "CUST-0007"}

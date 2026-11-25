@@ -4,7 +4,9 @@ import LoginPage from "./pages/LoginPage.jsx";
 import OrderHistoryPage from "./pages/OrderHistoryPage.jsx";
 import RecommendationsPage from "./pages/RecommendationsPage.jsx";
 import SubscriptionPage from "./pages/SubscriptionPage.jsx";
-import { clearSession, loadSelectedProduct, loadSession, saveSelectedProduct, saveSession } from "./session.js";
+import { logoutCustomer } from "./api/recommendations.js";
+import { refreshAccessToken, setApiAccessToken } from "./api/client.js";
+import { clearSession, loadSelectedProduct, saveSelectedProduct } from "./session.js";
 
 // Hash routes, so the browser's back button works without a router library:
 //   #/                       recommendations
@@ -19,8 +21,34 @@ function parseRoute() {
 }
 
 export default function App() {
-  const [session, setSession] = useState(loadSession);
+  const [session, setSession] = useState(null);
+  const [sessionReady, setSessionReady] = useState(false);
   const [route, setRoute] = useState(parseRoute);
+  const [logoutError, setLogoutError] = useState(null);
+  const [restoreError, setRestoreError] = useState(null);
+
+  useEffect(() => {
+    const onSessionRefreshed = (event) => {
+      setApiAccessToken(event.detail.token);
+      setSession(event.detail);
+    };
+    window.addEventListener("auth:session-refreshed", onSessionRefreshed);
+    return () => window.removeEventListener("auth:session-refreshed", onSessionRefreshed);
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    refreshAccessToken()
+      .catch((error) => {
+        if (active && error.status !== 401) {
+          setRestoreError("Couldn't restore your session. Check your connection and try again.");
+        }
+      })
+      .finally(() => {
+        if (active) setSessionReady(true);
+      });
+    return () => { active = false; };
+  }, []);
 
   useEffect(() => {
     const onHashChange = () => setRoute(parseRoute());
@@ -29,34 +57,53 @@ export default function App() {
   }, []);
 
   const handleLogin = useCallback((next) => {
-    saveSession(next);
+    setApiAccessToken(next.token);
     setSession(next);
+    setLogoutError(null);
+    setRestoreError(null);
     window.location.hash = "#/";
   }, []);
 
-  const handleLogout = useCallback(() => {
+  const clearExpiredSession = useCallback(() => {
+    setApiAccessToken(null);
     clearSession();
     setSession(null);
     window.location.hash = "#/";
   }, []);
+
+  const handleLogout = useCallback(async () => {
+    setLogoutError(null);
+    try {
+      await logoutCustomer(session?.token);
+      clearExpiredSession();
+    } catch (error) {
+      setLogoutError(`Couldn't securely sign out. ${error.message}`);
+    }
+  }, [clearExpiredSession, session?.token]);
 
   const openSubscription = useCallback((rec) => {
     saveSelectedProduct(rec);
     window.location.hash = `#/subscribe/${encodeURIComponent(rec.product_id)}`;
   }, []);
 
-  if (!session) return <LoginPage onLogin={handleLogin} />;
+  if (!sessionReady) return <main className="main"><p className="muted">Restoring your secure session…</p></main>;
+  if (!session?.token) return <LoginPage onLogin={handleLogin} initialError={restoreError} />;
 
   return (
     <div className="page">
       <Header customerId={session.customerId} onSwitchCustomer={handleLogout} currentPage={route.page} />
+      {logoutError && <p className="form-error logout-error" role="alert">{logoutError}</p>}
       {route.page === "orders" ? (
-        <OrderHistoryPage onBack={() => { window.location.hash = "#/"; }} />
+        <OrderHistoryPage session={session} onSessionExpired={clearExpiredSession}
+                          onBack={() => { window.location.hash = "#/"; }} />
       ) : route.page === "subscribe" || route.page === "subscriptions" ? (
         <SubscriptionPage product={route.page === "subscribe" ? loadSelectedProduct(route.productId) : null}
-                          customerId={session.customerId} onBack={() => { window.location.hash = "#/"; }} />
+                          session={session} customerId={session.customerId}
+                          onSessionExpired={clearExpiredSession}
+                          onBack={() => { window.location.hash = "#/"; }} />
       ) : (
-        <RecommendationsPage session={session} onSubscribe={openSubscription} onSessionExpired={handleLogout} />
+        <RecommendationsPage session={session} onSubscribe={openSubscription}
+                             onSessionExpired={clearExpiredSession} />
       )}
     </div>
   );

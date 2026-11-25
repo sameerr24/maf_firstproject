@@ -77,9 +77,14 @@ GET /api/products/:id · GET /api/subscriptions/draft?product_id=&rec_id= · GET
 
 **Auth** (Sameer's `customer_auth` + `app/auth.py`, merged in #4)
 - Flask routes use `from app.auth import login_required`, which sets `g.customer_id`. **Never** read customer_id from the request body or query; another customer's subscription or order returns **404**.
+- **Updated auth contract (supersedes the legacy token/demo-login details below):** FastAPI verifies MSG91 Widget access tokens server-side before login or registration. `MSG91_AUTHKEY` is server-only; widget ID/token are public browser configuration, and the widget's allowed domains must be restricted in MSG91.
+- Access tokens are short-lived HS256 JWTs signed with `AUTH_SECRET_KEY` (at least 32 characters; default 15 minutes). The same access tokens work in FastAPI and Flask.
+- Refresh sessions use opaque, hashed, rotating tokens in a Secure/HttpOnly/SameSite=Strict cookie. Apply `migrations/sql/003_customer_auth_sessions.sql` before using auth; refresh sessions and rate-limit buckets are stored in the shared database.
+- `POST /api/v1/auth/login` accepts only a verified phone; `POST /api/v1/auth/register` creates a new customer with `behaviour_segment="new"` and no messaging consent. Existing customers need their phone already associated with `customers.phone_e164`.
+- `POST /api/v1/auth/refresh` rotates the refresh cookie; `POST /api/v1/auth/logout` revokes the refresh session. `GET /api/v1/auth/me` returns the authenticated customer.
 - Tokens: `Authorization: Bearer <token>`, signed with **`AUTH_SECRET_KEY`** (at least 32 characters) via itsdangerous, valid for 7 days. The same tokens work in the FastAPI recommendation API and in Flask, as long as both read the same `AUTH_SECRET_KEY`.
 - Failures return 401, `WWW-Authenticate: Bearer`, and `{"error": {"code": "unauthorized" | "token_expired", "message": ...}}`.
-- Demo login is on the **FastAPI** app: `POST /api/v1/auth/demo-login {"customer_id": ...}` (only with `AUTH_DEMO_LOGIN=true`), plus `GET /api/v1/auth/me`.
+- The customer-ID demo-login endpoint has been removed. See the updated OTP login, registration, refresh and logout contract above.
 - In tests, issue tokens with `customer_auth.TokenService(AuthSettings(secret_key=...)).issue("CUST-0001")` (see `tests/subscription_db.py: bearer()`).
 - Chat webhooks and the bot don't use this auth. The bot identifies customers by their linked chat (`telegram_links`).
 

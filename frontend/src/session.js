@@ -1,6 +1,5 @@
-// Session state lives in sessionStorage: it survives a page reload but not a closed tab.
+// The selected recommendation survives a reload; access tokens remain in memory.
 
-const SESSION_KEY = "smart-reorder.session";
 const SELECTED_KEY = "smart-reorder.selected-product";
 
 function read(key) {
@@ -11,17 +10,7 @@ function read(key) {
   }
 }
 
-export function loadSession() {
-  const s = read(SESSION_KEY);
-  return s?.token && s?.customerId ? s : null;
-}
-
-export function saveSession(session) {
-  sessionStorage.setItem(SESSION_KEY, JSON.stringify(session));
-}
-
 export function clearSession() {
-  sessionStorage.removeItem(SESSION_KEY);
   sessionStorage.removeItem(SELECTED_KEY);
 }
 
