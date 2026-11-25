@@ -68,8 +68,50 @@ RLS is enabled with no policies. Flask connects with the postgres connection str
 ## API endpoints (Shubham)
 GET /api/products/:id · GET /api/subscriptions/draft?product_id=&rec_id= · GET/POST /api/subscriptions · PATCH/DELETE /api/subscriptions/:id · POST /api/subscriptions/:id/skip · GET /api/orders · GET/POST /webhooks/whatsapp · POST /api/dev/run-scheduler
 
-## Open questions for Sameer
-1. Recommendation output: endpoint or table? Shape: recommendation_id, customer_id, product_id, recommended_quantity, recommended_frequency_days, score, rank, reason. (Don't just read back `customer_product_profiles.intended_*`; those are the parameters used to generate the synthetic data.)
-2. Auth: how the token reaches Flask, what it contains, and how to get customer_id from it.
-3. price vs discount_price; order ID format; existing models and repo layout.
-4. Allowed quantity and frequency bounds; fallback when there's no recommendation.
+## Decisions (agreed with Sameer, 2026-11-24)
+
+**Pricing**
+- `products.price` is the regular (non-subscriber) price, and `discount_price` is the subscriber price.
+- Subscriptions charge `discount_price`, stored as `unit_price_at_subscription`.
+- The PDP shows `price` struck through, plus the saving per unit and per delivery.
+
+**Auth** (Sameer's `customer_auth` + `app/auth.py`, merged in #4)
+- Flask routes use `from app.auth import login_required`, which sets `g.customer_id`. **Never** read customer_id from the request body or query; another customer's subscription or order returns **404**.
+- Tokens: `Authorization: Bearer <token>`, signed with **`AUTH_SECRET_KEY`** (at least 32 characters) via itsdangerous, valid for 7 days. The same tokens work in the FastAPI recommendation API and in Flask, as long as both read the same `AUTH_SECRET_KEY`.
+- Failures return 401, `WWW-Authenticate: Bearer`, and `{"error": {"code": "unauthorized" | "token_expired", "message": ...}}`.
+- Demo login is on the **FastAPI** app: `POST /api/v1/auth/demo-login {"customer_id": ...}` (only with `AUTH_DEMO_LOGIN=true`), plus `GET /api/v1/auth/me`.
+- In tests, issue tokens with `customer_auth.TokenService(AuthSettings(secret_key=...)).issue("CUST-0001")` (see `tests/subscription_db.py: bearer()`).
+- Chat webhooks and the bot don't use this auth. The bot identifies customers by their linked chat (`telegram_links`).
+
+**Subscription orders** (written on Approve)
+- `order_id = SUB-<occurrence_id>`, `order_item_id = SUBI-<occurrence_id>` (IDs are at most 20 characters).
+- `order_datetime` is **naive Asia/Kolkata time**, and `order_date = order_datetime.date()`. The column has no time zone and a CHECK requires them to match, so UTC would break orders between 00:00 and 05:30 IST.
+- `source='subscription'`, `item_count=1`, `unit_count=quantity`, `unit_price=unit_price_at_subscription` (or the accepted new price), `line_total = quantity * unit_price` exactly, `order_total = line_total`.
+
+**Recommendations** (Sameer)
+- He learns only from `source='manual'` orders, so subscriptions don't feed back into their own cadence.
+- Products with a live (non-cancelled) subscription are left out of the recommendations grid.
+- For subscribed products he reads `delivery_occurrences` (skips, delays) and subscription edits to suggest adjustments. The user's edited values always win.
+- He scopes the validator's three profile/price warnings to manual orders.
+
+**Chat notifications are required to subscribe** (Shubham, 2026-11-24/25)
+- A customer can be messaged when `whatsapp_opt_in = true` (general consent), `phone_e164` is set, and their chat is linked. Creating or resuming a subscription otherwise returns 409 `messaging_required`.
+- Product and draft responses include `messaging_ready`.
+- If a customer stops being reachable after subscribing (opt-out, phone removed, bot blocked), due deliveries are skipped (`SKIPPED` / `NO_RESPONSE`) without messaging them. Nothing is charged.
+
+**Demo channel: Telegram bot, designed for WhatsApp** (Shubham, 2026-11-25)
+- The brief only requires push notifications. The product is designed for WhatsApp (templates in `docs/WHATSAPP_TEMPLATES.md`). Because of Meta account restrictions, the demo sends the same messages and buttons through a Telegram bot.
+- A bot can only message chats that started it, by chat ID. The customer taps Start, then "Share my phone number". The shared number must be their own and must match `customers.phone_e164`. The chat is stored in `telegram_links` (migration `migrations/sql/002_telegram_links.sql`; no existing table changed).
+- Existing names stay: `whatsapp_opt_in` means "may be messaged" and `whatsapp_messages` logs Telegram messages too (`wa_message_id` = `tg:<chat>:<message>` outbound, `tg-update:<update_id>` inbound, for dedupe).
+- Run the bot with `flask --app run telegram-poll` (long polling, so no public URL or ngrok). Reminders go through Telegram whenever `TELEGRAM_BOT_TOKEN` is set.
+- Approve: slot picker, then one transaction: lock and decrement stock, create the order, set `ORDER_PLACED`. Approving accepts the current subscriber price.
+
+**Delay = approve again** (Shubham, 2026-11-24; the problem statement requires every charge to be approved)
+- "Delay N days" (N = 1 or 2) moves only this delivery. The occurrence keeps its cycle date (`scheduled_date`), gets `delay_days`, and becomes `DELAYED`. The delivery date is `scheduled_date + delay_days`.
+- The day before the new date, the scheduler sends a fresh reminder (`NOTIFIED` with a new deadline). No reply means auto-skip, as usual. Nothing is charged without an Approve.
+- The total delay is at most 2 days and always before the next cycle (no delay option for daily items). The next cycle stays on the original schedule.
+- On Approve, the order is for the delivery date, i.e. including the delay.
+
+## Still open
+1. Recommendation output for the draft endpoint: endpoint or table, and its shape (recommendation_id, customer_id, product_id, recommended_quantity, recommended_frequency_days, score, rank, reason).
+2. Allowed quantity and frequency bounds; fallback when there's no recommendation.

@@ -6,5 +6,6 @@ from app.models.inventory import Inventory  # noqa: F401
 from app.models.subscriptions import (  # noqa: F401
     OCCURRENCE_STATUSES, SKIP_REASONS, SUBSCRIPTION_STATUSES, DeliveryOccurrence, Subscription,
 )
+from app.models.telegram import TelegramLink  # noqa: F401
 from app.models.whatsapp import DIRECTIONS, WhatsAppMessage  # noqa: F401
 from database.models import ORDER_SOURCES, Customer, Order, Product  # noqa: F401
