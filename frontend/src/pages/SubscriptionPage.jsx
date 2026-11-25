@@ -134,8 +134,10 @@ export default function SubscriptionPage({ product, onBack }) {
 // --------------------------------------------------------------------------- new subscription
 function NewSubscription({ rec, draft, token, onCreated, onFail, onRecheck }) {
   const { limits, product: offer } = draft;
-  const recQty = rec.suggested_quantity ?? null;
-  const recEvery = recommendedEvery(rec);
+  // The draft carries the engine's recommendation (server side); the card's values are the fallback.
+  const fromEngine = draft.recommendation?.source === "recommendation";
+  const recQty = fromEngine ? draft.recommendation.quantity : (rec.suggested_quantity ?? null);
+  const recEvery = fromEngine ? draft.recommendation.frequency_days : recommendedEvery(rec);
   const [quantity, setQuantity] = useState(() => String(clamp(recQty ?? draft.quantity, limits.quantity)));
   const [frequency, setFrequency] = useState(() => String(clamp(recEvery ?? draft.frequency_days, limits.frequency_days)));
   const [firstDate, setFirstDate] = useState(draft.first_delivery_date);

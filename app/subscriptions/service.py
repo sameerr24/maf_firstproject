@@ -12,7 +12,6 @@ the scheduler or a WhatsApp reply for the same subscription.
 from __future__ import annotations
 
 import datetime as dt
-from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
@@ -25,6 +24,8 @@ from app.errors import Conflict, NotFound, ValidationError
 from app.models import Customer, DeliveryOccurrence, Inventory, Product, Subscription
 from database.models import Order, OrderItem
 from app.notifications.sender import can_message
+from app.subscriptions import recommendations
+from app.subscriptions.recommendations import EngineRecommendation
 from app.timeutil import LOCAL_TZ, local_date, now_utc, today_local
 from database.models import WEEKDAYS
 
@@ -35,24 +36,14 @@ CENT = Decimal("0.01")
 
 
 # --------------------------------------------------------------------------- #
-# Recommendations (source not decided yet)
+# Recommendations (Sameer's engine, see app/subscriptions/recommendations.py)
 # --------------------------------------------------------------------------- #
-@dataclass(frozen=True)
-class Recommendation:
-    quantity: int
-    frequency_days: int
-    recommendation_id: str | None = None
-    reason: str | None = None
-
-
 def get_recommendation(session: Session, customer_id: str, product_id: str,
-                       rec_id: str | None = None) -> Recommendation | None:
-    """The recommended quantity/frequency for this customer + product, if any.
-
-    TODO: wire to Sameer's recommendation output once its source (endpoint or table) and
-    shape are agreed. Until then every draft uses the defaults in app.constants.
-    """
-    return None
+                       rec_id: str | None = None) -> EngineRecommendation | None:
+    """The engine's recommended quantity/frequency for this customer + product, or None.
+    `rec_id` is accepted for compatibility but unused: the engine identifies a
+    recommendation by customer and product."""
+    return recommendations.recommend(session, customer_id, product_id)
 
 
 # --------------------------------------------------------------------------- #
@@ -286,7 +277,11 @@ def subscription_draft(session: Session, customer_id: str, product_id: str, rec_
         "saving_per_delivery": _money((p.price - p.discount_price) * quantity),
         "recommendation": {
             "source": "recommendation" if rec else "default",
-            "recommendation_id": rec.recommendation_id if rec else None,
+            "quantity": rec.quantity if rec else None,
+            "frequency_days": rec.frequency_days if rec else None,
+            "rank": rec.rank if rec else None,
+            "score": rec.score if rec else None,
+            "status": rec.status if rec else None,
             "reason": rec.reason if rec else None,
         },
         "existing_subscription": subscription_to_dict(live) if live else None,
