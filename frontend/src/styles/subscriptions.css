@@ -1,0 +1,71 @@
+/* Subscription page (subscriptions module). Uses the theme tokens from app.css. */
+
+.subs { display: grid; gap: 1.5rem; max-width: 980px; margin: 0 auto; }
+
+/* ---------- header link (Header.jsx) ---------- */
+.header__link { color: var(--ink-2); font-weight: 650; font-size: .9rem; text-decoration: none; padding: .4rem .75rem;
+  border-radius: 999px; white-space: nowrap; }
+.header__link:hover { color: var(--brand-700); background: var(--brand-50); }
+.header__link[aria-current="page"] { color: var(--brand-900); background: var(--brand-100); }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* ---------- new subscription card ---------- */
+.sub-new { background: var(--surface); border: 1px solid var(--line); border-radius: calc(var(--radius) + 6px);
+  box-shadow: var(--shadow); padding: 1.75rem; display: grid; gap: 1.25rem; }
+.sub-new h1 { font-size: 1.5rem; }
+.sub-new--loading { min-height: 320px; }
+.sub-new--done { gap: .6rem; }
+.sub-new__product { display: grid; grid-template-columns: 140px 1fr; gap: 1.25rem; align-items: center; }
+.sub-new__product .product-image { aspect-ratio: 1 / 1; }
+.sub-new__product .product-image__cat { display: none; }
+.sub-new__actions { display: flex; justify-content: flex-end; gap: .6rem; flex-wrap: wrap; }
+
+.chat-connect { display: grid; gap: .45rem; background: var(--info-bg); color: var(--info); border-radius: var(--radius-sm); padding: 1rem 1.1rem; }
+.chat-connect span { color: var(--ink-2); font-size: .92rem; }
+.chat-connect__actions { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; margin-top: .25rem; }
+
+.sub-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem 1.25rem; }
+.sub-form__summary, .sub-form__note, .sub-form .form-error, .sub-form .sub-new__actions { grid-column: 1 / -1; }
+.sub-form__note { font-size: .88rem; color: var(--ink-2); background: var(--brand-50); border-radius: var(--radius-sm); padding: .7rem .9rem; }
+.field__hint { font-size: .78rem; color: var(--ink-3); }
+.sub-input { font: inherit; width: 100%; padding: .6rem .75rem; border: 1px solid var(--line); border-radius: var(--radius-sm);
+  background: var(--surface); color: var(--ink); }
+.sub-input:focus-visible { outline: 3px solid color-mix(in srgb, var(--brand-600) 35%, transparent); border-color: var(--brand-600); }
+.sub-input[aria-invalid="true"] { border-color: var(--danger); }
+
+/* ---------- existing subscriptions ---------- */
+.sub-list { display: grid; gap: .9rem; }
+.sub-list h2 { font-size: 1.2rem; }
+.sub-list__items { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1rem; }
+
+.sub-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow);
+  display: grid; grid-template-columns: 88px 1fr; gap: .9rem; padding: 1rem; }
+.sub-card--highlight { border-color: var(--brand-600); box-shadow: 0 0 0 3px var(--brand-100), var(--shadow); }
+.sub-card--paused .sub-card__media { filter: grayscale(.6); opacity: .8; }
+.sub-card__media .product-image { aspect-ratio: 1 / 1; }
+.sub-card__media .product-image__cat { display: none; }
+.sub-card__body { display: grid; gap: .3rem; align-content: start; min-width: 0; }
+.sub-card__top { display: flex; justify-content: space-between; align-items: flex-start; gap: .5rem; }
+.sub-card__title { font-size: 1rem; font-weight: 700; }
+.sub-card__body .facts { margin-top: .4rem; }
+.sub-card__actions { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .5rem; }
+.sub-card__cancel { color: var(--danger); }
+.sub-card__cancel:hover:not(:disabled) { border-color: var(--danger); color: var(--danger); }
+.sub-card__edit { display: grid; grid-template-columns: 1fr 1fr; gap: .6rem; margin-top: .4rem; }
+.sub-card__edit .sub-card__actions { grid-column: 1 / -1; }
+
+.sub-status { font-size: .72rem; font-weight: 700; border-radius: 999px; padding: .2rem .6rem; white-space: nowrap; }
+.sub-status--active { background: var(--neutral-bg); color: var(--neutral); }
+.sub-status--paused { background: var(--warning-bg); color: var(--warning); }
+.sub-status--cancelled { background: var(--muted-bg); color: var(--muted); }
+
+.sub-warn { color: var(--warning); font-size: .85rem; font-weight: 600; }
+.sub-ok { color: var(--brand-700); font-size: .85rem; font-weight: 650; }
+
+@media (max-width: 640px) {
+  .header__link { padding: .35rem .5rem; font-size: .8rem; }
+  .sub-new { padding: 1.25rem; }
+  .sub-new__product { grid-template-columns: 88px 1fr; }
+  .sub-form { grid-template-columns: 1fr; }
+  .sub-card { grid-template-columns: 64px 1fr; }
+}
