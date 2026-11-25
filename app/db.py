@@ -21,10 +21,16 @@ def _new_session() -> Session:
 db_session: scoped_session = scoped_session(_new_session)
 
 
+# Replace pooled connections idle longer than this. A laptop that slept (or a network that
+# dropped) leaves dead sockets in the pool; reusing one fails the request.
+POOL_RECYCLE_SECONDS = 300
+
+
 def init_db(app: Flask) -> None:
     # DB_SEARCH_PATH (optional) pins a PostgreSQL schema; tests use it for isolation.
     app.extensions["db_engine"] = make_engine(app.config["DATABASE_URL"],
-                                              search_path=app.config.get("DB_SEARCH_PATH"))
+                                              search_path=app.config.get("DB_SEARCH_PATH"),
+                                              pool_recycle=POOL_RECYCLE_SECONDS)
 
     @app.teardown_appcontext
     def _remove_session(exc: BaseException | None) -> None:
