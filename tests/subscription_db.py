@@ -11,6 +11,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.models import Inventory, SubscriptionsBase, TelegramLink
+from customer_auth import AuthSettings, TokenService
 from database import connection
 from database.models import Base, Customer, Product
 
@@ -21,11 +22,21 @@ MILK, SOAP, TV = "bb-milk", "bb-soap", "bb-tv"
 
 
 # ------------------------------------------------------------------ fixtures
+TEST_AUTH_SECRET = "test-only-auth-secret-0123456789abcdef"   # >= 32 chars, as customer_auth requires
+
+
 @pytest.fixture(autouse=True)
-def no_real_telegram(monkeypatch):
-    """Never use the real bot token from .env in tests: scheduler runs fall back to the
-    LoggingSender. Set to empty (not deleted) so load_env() can't re-add it from .env."""
+def test_env(monkeypatch):
+    """Isolate tests from the real .env: no real bot token (scheduler runs fall back to the
+    LoggingSender) and a fixed auth secret. Set, not deleted, so load_env() can't re-add them."""
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "")
+    monkeypatch.setenv("AUTH_SECRET_KEY", TEST_AUTH_SECRET)
+    monkeypatch.setenv("AUTH_DEMO_LOGIN", "false")
+
+
+def bearer(customer_id: str, secret: str = TEST_AUTH_SECRET) -> dict:
+    """Authorization header with a token from Sameer's customer_auth (as the demo login issues)."""
+    return {"Authorization": f"Bearer {TokenService(AuthSettings(secret_key=secret)).issue(customer_id)}"}
 
 
 @pytest.fixture(scope="module")

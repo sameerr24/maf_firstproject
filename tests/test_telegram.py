@@ -16,7 +16,7 @@ from app.subscriptions import jobs
 from app.subscriptions import service as svc
 from app.timeutil import LOCAL_TZ
 from database.models import Order, OrderItem
-from subscription_db import CHAT, ME, MILK, OTHER, TODAY, no_real_telegram, admin_engine, schema_engine  # noqa: F401
+from subscription_db import CHAT, ME, MILK, OTHER, TODAY, test_env, admin_engine, schema_engine  # noqa: F401
 
 
 def at(day, hour=9, minute=0, month=11):

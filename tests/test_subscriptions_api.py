@@ -5,8 +5,7 @@ Runs the real app against a throwaway schema on the local test database.
 import pytest
 
 from app import create_app
-from app.auth_bridge import issue_token
-from subscription_db import ME, MILK, NOWA, OTHER, TV, no_real_telegram, admin_engine, schema_engine  # noqa: F401
+from subscription_db import ME, MILK, NOWA, OTHER, TV, bearer, test_env, admin_engine, schema_engine  # noqa: F401
 
 
 @pytest.fixture
@@ -23,10 +22,9 @@ def client(app):
 
 
 @pytest.fixture
-def auth(app):
+def auth():
     def headers(customer_id=ME):
-        with app.app_context():
-            return {"Authorization": f"Bearer {issue_token(customer_id)}"}
+        return bearer(customer_id)
     return headers
 
 
@@ -45,14 +43,27 @@ def test_requires_auth(client, headers, method, path):
     r = getattr(client, method)(path, headers=headers, json={})
     assert r.status_code == 401
     assert r.json["error"]["code"] == "unauthorized"
+    assert r.headers["WWW-Authenticate"] == "Bearer"
 
 
-def test_token_signed_with_other_key_is_rejected(client, app):
-    other = create_app("test", overrides={"SECRET_KEY": "different", "DB_SEARCH_PATH": "public"})
-    with other.app_context():
-        token = issue_token(ME)
-    other.extensions["db_engine"].dispose()
-    assert client.get("/api/subscriptions", headers={"Authorization": f"Bearer {token}"}).status_code == 401
+def test_token_signed_with_other_key_is_rejected(client):
+    forged = bearer(ME, secret="some-other-secret-that-is-long-enough-123")
+    assert client.get("/api/subscriptions", headers=forged).status_code == 401
+
+
+def test_flask_accepts_the_same_tokens_as_the_recommendation_api(client, monkeypatch):
+    """A token from the FastAPI demo login (same AUTH_SECRET_KEY) works on the Flask routes."""
+    from fastapi.testclient import TestClient
+
+    from recommendation_api.factory import create_app as create_rec_api
+
+    monkeypatch.setenv("AUTH_DEMO_LOGIN", "true")
+    rec_api = create_rec_api()
+    token = rec_api.state.token_service.issue(ME)        # what POST /api/v1/auth/demo-login returns
+    assert TestClient(rec_api).get("/api/v1/auth/me", headers={"Authorization": f"Bearer {token}"}).json() == \
+        {"customer_id": ME}
+    r = client.get("/api/subscriptions", headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 200 and r.json == {"subscriptions": []}
 
 
 # ------------------------------------------------------------------ products / draft

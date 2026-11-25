@@ -17,7 +17,7 @@ from app.errors import Conflict, NotFound, ValidationError, register_error_handl
 from app.models import DeliveryOccurrence, Subscription
 from app.subscriptions import service as svc
 from database.models import Customer, Product
-from subscription_db import ME, MILK, NOWA, OTHER, SOAP, TODAY, TV, no_real_telegram, admin_engine, schema_engine, session  # noqa: F401
+from subscription_db import ME, MILK, NOWA, OTHER, SOAP, TODAY, TV, test_env, admin_engine, schema_engine, session  # noqa: F401
 
 
 def create(s, customer=ME, **data):

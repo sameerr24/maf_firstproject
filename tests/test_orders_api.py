@@ -6,12 +6,11 @@ import pytest
 from sqlalchemy.orm import Session
 
 from app import create_app
-from app.auth_bridge import issue_token
 from app.errors import NotFound, ValidationError
 from app.models import DeliveryOccurrence, Subscription
 from app.orders import service as svc
 from database.models import Order, OrderItem
-from subscription_db import ME, MILK, OTHER, SOAP, no_real_telegram, admin_engine, schema_engine  # noqa: F401
+from subscription_db import ME, MILK, OTHER, SOAP, bearer, test_env, admin_engine, schema_engine  # noqa: F401
 
 
 def _order(oid, customer, when, lines, source="manual", slot=None):
@@ -111,8 +110,7 @@ def test_only_own_orders(seeded):
 def client(seeded):
     _, schema, _ = seeded
     app = create_app("test", overrides={"DB_SEARCH_PATH": schema})
-    with app.app_context():
-        tokens = {c: {"Authorization": f"Bearer {issue_token(c)}"} for c in (ME, OTHER)}
+    tokens = {c: bearer(c) for c in (ME, OTHER)}
     yield app.test_client(), tokens
     app.extensions["db_engine"].dispose()
 

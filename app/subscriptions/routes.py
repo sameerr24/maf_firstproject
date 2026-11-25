@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from flask import g, jsonify, request, url_for
 
-from app.auth_bridge import login_required
+from app.auth import login_required
 from app.db import db_session
 from app.errors import ValidationError
 from app.subscriptions import bp, service

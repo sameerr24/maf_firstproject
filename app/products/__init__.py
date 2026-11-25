@@ -2,7 +2,7 @@
 
 from flask import Blueprint, g, jsonify
 
-from app.auth_bridge import login_required
+from app.auth import login_required
 from app.db import db_session
 from app.subscriptions.service import product_offer
 

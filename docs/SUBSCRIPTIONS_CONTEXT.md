@@ -75,15 +75,13 @@ GET /api/products/:id · GET /api/subscriptions/draft?product_id=&rec_id= · GET
 - Subscriptions charge `discount_price`, stored as `unit_price_at_subscription`.
 - The PDP shows `price` struck through, plus the saving per unit and per delivery.
 
-**Auth** (Sameer adds `app/auth.py`)
-- The interface is `@login_required` (sets `g.customer_id`), `get_current_customer_id()` and `issue_token(customer_id)`.
-- The token arrives as `Authorization: Bearer <token>`. It's signed with `FLASK_SECRET_KEY` via itsdangerous and expires after 7 days.
-- A failure returns 401 with `{"error": {"code": "unauthorized", "message": ...}}`.
-- **Never** read customer_id from the request body or query; always use `g.customer_id`.
-- Another customer's subscription or order returns **404**, not 403.
-- Demo login: `POST /api/auth/demo-login {"customer_id": ...}`, only when `AUTH_DEMO_LOGIN=1`. Also `GET /api/auth/me`.
-- In tests, call `issue_token("CUST-0001")` directly.
-- Webhooks don't use this auth. They use the Meta signature plus `phone_e164`.
+**Auth** (Sameer's `customer_auth` + `app/auth.py`, merged in #4)
+- Flask routes use `from app.auth import login_required`, which sets `g.customer_id`. **Never** read customer_id from the request body or query; another customer's subscription or order returns **404**.
+- Tokens: `Authorization: Bearer <token>`, signed with **`AUTH_SECRET_KEY`** (at least 32 characters) via itsdangerous, valid for 7 days. The same tokens work in the FastAPI recommendation API and in Flask, as long as both read the same `AUTH_SECRET_KEY`.
+- Failures return 401, `WWW-Authenticate: Bearer`, and `{"error": {"code": "unauthorized" | "token_expired", "message": ...}}`.
+- Demo login is on the **FastAPI** app: `POST /api/v1/auth/demo-login {"customer_id": ...}` (only with `AUTH_DEMO_LOGIN=true`), plus `GET /api/v1/auth/me`.
+- In tests, issue tokens with `customer_auth.TokenService(AuthSettings(secret_key=...)).issue("CUST-0001")` (see `tests/subscription_db.py: bearer()`).
+- Chat webhooks and the bot don't use this auth. The bot identifies customers by their linked chat (`telegram_links`).
 
 **Subscription orders** (written on Approve)
 - `order_id = SUB-<occurrence_id>`, `order_item_id = SUBI-<occurrence_id>` (IDs are at most 20 characters).

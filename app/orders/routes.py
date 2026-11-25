@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from flask import g, jsonify, request
 
-from app.auth_bridge import login_required
+from app.auth import login_required
 from app.db import db_session
 from app.orders import bp, service
 
