@@ -29,7 +29,7 @@ from typing import Any
 
 from sqlalchemy import delete, or_, select
 from sqlalchemy.engine import Engine
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import Session
 
 from app.constants import DELIVERY_SLOTS
@@ -241,6 +241,17 @@ def _ack_tap(client, cq: dict) -> None:
             log.debug("removing buttons failed", exc_info=True)
 
 
+def _apply(engine: Engine, update: dict, chat_id: int | None, now) -> list[Out]:
+    """The database part of one update, in its own transaction."""
+    with Session(engine, expire_on_commit=False) as s, s.begin():
+        link = _link_for_chat(s, chat_id) if chat_id is not None else None
+        s.add(WhatsAppMessage(wa_message_id=f"tg-update:{update['update_id']}", direction="INBOUND",
+                              message_type="callback" if "callback_query" in update else "message",
+                              customer_id=link.customer_id if link else None, payload=update))
+        s.flush()                                   # duplicate update_id -> IntegrityError
+        return handle_update(s, update, now)
+
+
 def process_update(engine: Engine, client, update: dict, now=None) -> str:
     """Process one update in its own transaction, then make the Telegram calls.
     Returns "processed", "duplicate" or "error"."""
@@ -249,13 +260,16 @@ def process_update(engine: Engine, client, update: dict, now=None) -> str:
     if "callback_query" in update:
         _ack_tap(client, update["callback_query"])
     try:
-        with Session(engine, expire_on_commit=False) as s, s.begin():
-            link = _link_for_chat(s, chat_id) if chat_id is not None else None
-            s.add(WhatsAppMessage(wa_message_id=f"tg-update:{update['update_id']}", direction="INBOUND",
-                                  message_type="callback" if "callback_query" in update else "message",
-                                  customer_id=link.customer_id if link else None, payload=update))
-            s.flush()                               # duplicate update_id -> IntegrityError
-            outs = handle_update(s, update, now)
+        try:
+            outs = _apply(engine, update, chat_id, now)
+        except IntegrityError:
+            raise
+        except DBAPIError:
+            # Usually a pooled connection that died (laptop slept, network dropped). Nothing
+            # was committed; drop the pool and try this update once more on fresh connections.
+            log.warning("Database error on update %s; reconnecting and retrying once", update.get("update_id"))
+            engine.dispose()
+            outs = _apply(engine, update, chat_id, now)
     except IntegrityError as e:
         if "wa_message_id" in str(e.orig):
             return "duplicate"
@@ -265,7 +279,10 @@ def process_update(engine: Engine, client, update: dict, now=None) -> str:
         log.exception("Telegram update %s failed", update.get("update_id"))
         outs, status = [], "error"
     if status == "error" and chat_id is not None:
-        outs = [_send(chat_id, "Sorry, something went wrong. Please try again in a moment.")]
+        # The tapped message's buttons were already removed: offer the same action again.
+        data = (update.get("callback_query") or {}).get("data")
+        retry = _buttons(("Try again", data)) if data else None
+        outs = [_send(chat_id, "Sorry, something went wrong. Please try again in a moment.", retry)]
     for o in outs:
         try:
             getattr(client, o.method)(**o.params)

@@ -298,6 +298,7 @@ def test_unexpected_error_rolls_back_and_apologises(engine, tg, monkeypatch):
     update = tap(CHAT[ME], f"SKIPCONF:{occ_id}")
     assert process_update(engine, tg, update, now=at(27, 10)) == "error"
     assert "something went wrong" in tg.last_text() and occ_state(engine, occ_id)[0] == "NOTIFIED"
+    assert tg.last_buttons() == [("Try again", f"SKIPCONF:{occ_id}")]          # buttons were removed on tap
     monkeypatch.undo()
     assert process_update(engine, tg, update, now=at(27, 10)) == "processed"   # not recorded, so retryable
     assert occ_state(engine, occ_id)[0] == "SKIPPED"
@@ -333,3 +334,23 @@ def test_polling_reconnects_after_network_error(engine):
     finally:
         telegram_bot.time.sleep = original_sleep
     assert tg.resets == 1 and tg.polls == 2 and "Welcome" in tg.last_text()
+
+
+def test_dead_db_connection_is_retried_once(engine, tg, monkeypatch):
+    """After sleep, the first use of a pooled connection fails; the tap must still go through."""
+    from sqlalchemy.exc import OperationalError
+    from app.notifications import telegram_bot
+
+    sid = subscribe(engine)
+    occ_id = remind(engine, tg, sid)
+    real_apply, calls = telegram_bot._apply, []
+
+    def flaky_apply(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise OperationalError("SELECT 1", {}, Exception("could not receive data from server"))
+        return real_apply(*args, **kwargs)
+
+    monkeypatch.setattr(telegram_bot, "_apply", flaky_apply)
+    assert process_update(engine, tg, tap(CHAT[ME], f"SKIP:{occ_id}"), now=at(27, 10)) == "processed"
+    assert len(calls) == 2 and [b[0] for b in tg.last_buttons()][0] == "Skip this delivery"
