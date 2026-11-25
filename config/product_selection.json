@@ -35,6 +35,15 @@
     "100008548": "Original Bathing Bar Soap",
     "40226539": "Dishwashing Liquid - Pomegranate"
   },
+  "image_url_overrides": {
+    "_comment": "Optional: SKU id -> replacement image URL, for images BigBasket has since replaced (the dataset URL now returns 404). Keyed by SKU like display_name_overrides; BigBasket.csv is never edited.",
+    "20005547": "https://www.bigbasket.com/media/uploads/p/l/20005547_12-colgate-strong-teeth-anticavity-toothpaste-with-amino-shakti-formula-provides-fresher-breath.jpg",
+    "216809": "https://www.bigbasket.com/media/uploads/p/l/216809_13-dove-daily-shine-shampoo.jpg",
+    "266162": "https://www.bigbasket.com/media/uploads/p/l/266162_18-maggi-2-minute-instant-noodles-masala.jpg",
+    "292149": "https://www.bigbasket.com/media/uploads/p/l/292149_8-nescafe-sunrise-instant-coffee-chicory-mix.jpg",
+    "30007660": "https://www.bigbasket.com/media/uploads/p/l/30007660_2-elite-rusk-milk.jpg",
+    "40003162": "https://www.bigbasket.com/media/uploads/p/l/40003162_5-milky-mist-curd-farm-fresh.jpg"
+  },
   "targets": [
     {
       "product_type": "milk",
