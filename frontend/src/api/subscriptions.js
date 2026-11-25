@@ -5,7 +5,8 @@ import { flaskRequest as request } from "./flask.js";
 export const getDraft = (token, productId) =>
   request(`/api/subscriptions/draft?product_id=${encodeURIComponent(productId)}`, { token });
 
-export const listSubscriptions = (token) => request("/api/subscriptions", { token });
+/** All of the customer's subscriptions, cancelled ones included (shown greyed out, last). */
+export const listSubscriptions = (token) => request("/api/subscriptions?include_cancelled=1", { token });
 
 export const createSubscription = (token, body) =>
   request("/api/subscriptions", { token, method: "POST", body });

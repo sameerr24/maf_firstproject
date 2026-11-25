@@ -271,6 +271,12 @@ function NewSubscription({ rec, draft, token, onCreated, onFail, onRecheck }) {
 // --------------------------------------------------------------------------- existing subscriptions
 const STATUS_LABEL = { ACTIVE: "Active", PAUSED: "Paused", CANCELLED: "Cancelled" };
 
+/** "25 Nov 2026" in IST from a UTC timestamp such as cancelled_at. */
+function formatLocalDay(isoUtc) {
+  return new Date(isoUtc).toLocaleDateString("en-IN",
+    { day: "numeric", month: "short", year: "numeric", timeZone: "Asia/Kolkata" });
+}
+
 function SubscriptionCard({ sub, token, highlight, onChanged, onFail }) {
   const [editing, setEditing] = useState(false);
   const [quantity, setQuantity] = useState(String(sub.quantity));
@@ -311,8 +317,9 @@ function SubscriptionCard({ sub, token, highlight, onChanged, onFail }) {
   const setStatus = (status) => run(updateSubscription(token, sub.subscription_id, { status }));
 
   const p = sub.product;
+  const cancelled = sub.status === "CANCELLED";
   return (
-    <article className={`sub-card${highlight ? " sub-card--highlight" : ""}${sub.status === "PAUSED" ? " sub-card--paused" : ""}`}>
+    <article className={`sub-card${highlight ? " sub-card--highlight" : ""}${sub.status === "PAUSED" ? " sub-card--paused" : ""}${cancelled ? " sub-card--cancelled" : ""}`}>
       <div className="sub-card__media">
         <ProductImage src={p.image_url} alt={p.product_name} category={p.category} />
       </div>
@@ -328,11 +335,15 @@ function SubscriptionCard({ sub, token, highlight, onChanged, onFail }) {
             <li><span className="facts__label">Quantity</span><span>{plural(sub.quantity, "pack")}</span></li>
             <li><span className="facts__label">Every</span><span>{plural(sub.frequency_days, "day")}</span></li>
             <li>
-              <span className="facts__label">{sub.status === "PAUSED" ? "Paused" : "Next delivery"}</span>
+              <span className="facts__label">
+                {cancelled ? "Cancelled" : sub.status === "PAUSED" ? "Paused" : "Next delivery"}
+              </span>
               <span>
-                {sub.status === "PAUSED"
-                  ? (sub.paused_until ? `until ${formatDate(sub.paused_until)}` : "until you resume")
-                  : formatDate(sub.next_delivery_date)}
+                {cancelled
+                  ? (sub.cancelled_at ? `on ${formatLocalDay(sub.cancelled_at)}` : "no more deliveries")
+                  : sub.status === "PAUSED"
+                    ? (sub.paused_until ? `until ${formatDate(sub.paused_until)}` : "until you resume")
+                    : formatDate(sub.next_delivery_date)}
               </span>
             </li>
             <li><span className="facts__label">Per delivery</span><span>{formatPrice(Number(sub.total_per_delivery))}</span></li>
@@ -358,7 +369,7 @@ function SubscriptionCard({ sub, token, highlight, onChanged, onFail }) {
           </form>
         )}
 
-        {sub.price_changed && (
+        {sub.price_changed && !cancelled && (
           <p className="sub-warn">
             Price changed to {formatPrice(Number(sub.current_subscriber_price))} per pack. You'll confirm it when
             approving your next delivery.
@@ -367,7 +378,9 @@ function SubscriptionCard({ sub, token, highlight, onChanged, onFail }) {
         {message && <p className="sub-ok" role="status">{message}</p>}
         {cardError && <p className="form-error" role="alert">{cardError}</p>}
 
-        {!editing && (
+        {cancelled && <p className="muted">No more deliveries. Past orders stay in your order history.</p>}
+
+        {!editing && !cancelled && (
           <div className="sub-card__actions">
             <button type="button" className="btn btn--ghost btn--sm" disabled={busy} onClick={() => setEditing(true)}>Edit</button>
             {sub.status === "ACTIVE" && (
