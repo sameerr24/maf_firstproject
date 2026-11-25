@@ -65,6 +65,7 @@ def test_newest_first_with_items_and_subscription_link(seeded):
     assert second["order_id"] == "ORD-0024" and second["subscription_id"] is None
     assert [i["line_total"] for i in second["items"]] == ["54.00", "99.00"] and second["order_total"] == "153.00"
     assert second["items"][0]["product"]["product_id"] == MILK
+    assert second["items"][0]["product"]["category"] == "Cat"            # for the image fallback tile
 
 
 def test_pagination(seeded):

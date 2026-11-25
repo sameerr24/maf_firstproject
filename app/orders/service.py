@@ -28,7 +28,7 @@ def _item_to_dict(item: OrderItem) -> dict[str, Any]:
     return {
         "order_item_id": item.order_item_id,
         "product": {"product_id": p.product_id, "product_name": p.product_name, "brand": p.brand,
-                    "pack_size": p.pack_size, "image_url": p.image_url},
+                    "pack_size": p.pack_size, "image_url": p.image_url, "category": p.category},
         "quantity": item.quantity,
         "unit_price": _money(item.unit_price),
         "line_total": _money(item.line_total),

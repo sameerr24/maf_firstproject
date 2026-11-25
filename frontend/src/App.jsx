@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import Header from "./components/Header.jsx";
 import LoginPage from "./pages/LoginPage.jsx";
+import OrderHistoryPage from "./pages/OrderHistoryPage.jsx";
 import RecommendationsPage from "./pages/RecommendationsPage.jsx";
 import SubscriptionPage from "./pages/SubscriptionPage.jsx";
 import { clearSession, loadSelectedProduct, loadSession, saveSelectedProduct, saveSession } from "./session.js";
@@ -9,8 +10,10 @@ import { clearSession, loadSelectedProduct, loadSession, saveSelectedProduct, sa
 //   #/                       recommendations
 //   #/subscribe/<product_id> subscription page for one recommended product
 //   #/subscriptions          the customer's subscriptions (header link)
+//   #/orders                 order history (header link)
 function parseRoute() {
   if (window.location.hash === "#/subscriptions") return { page: "subscriptions" };
+  if (window.location.hash === "#/orders") return { page: "orders" };
   const match = window.location.hash.match(/^#\/subscribe\/(.+)$/);
   return match ? { page: "subscribe", productId: decodeURIComponent(match[1]) } : { page: "recommendations" };
 }
@@ -47,7 +50,9 @@ export default function App() {
   return (
     <div className="page">
       <Header customerId={session.customerId} onSwitchCustomer={handleLogout} currentPage={route.page} />
-      {route.page === "subscribe" || route.page === "subscriptions" ? (
+      {route.page === "orders" ? (
+        <OrderHistoryPage onBack={() => { window.location.hash = "#/"; }} />
+      ) : route.page === "subscribe" || route.page === "subscriptions" ? (
         <SubscriptionPage product={route.page === "subscribe" ? loadSelectedProduct(route.productId) : null}
                           customerId={session.customerId} onBack={() => { window.location.hash = "#/"; }} />
       ) : (
