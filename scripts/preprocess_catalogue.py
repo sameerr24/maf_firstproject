@@ -314,6 +314,7 @@ def select_for_target(df: pd.DataFrame, target: dict, config: dict) -> MatchResu
 def build_record(res: MatchResult, config: dict) -> dict:
     row, target = res.row, res.target
     overrides = {k: v for k, v in config.get("display_name_overrides", {}).items() if not k.startswith("_")}
+    image_overrides = {k: v for k, v in config.get("image_url_overrides", {}).items() if not k.startswith("_")}
     sku = row["sku_id"]
     name = overrides.get(sku) or clean_product_name(row["ProductName"])
     record = {
@@ -330,7 +331,7 @@ def build_record(res: MatchResult, config: dict) -> dict:
         **parse_pack_size(row["Quantity"]),
         "category": row["Category"],
         "subcategory": row["SubCategory"],
-        "image_url": row["Image_Url"],
+        "image_url": image_overrides.get(sku) or row["Image_Url"],   # dataset image may have been replaced
         "product_url": row["Absolute_Url"],
         "replenishable": bool(target.get("replenishable", True)),
         "consumption_pattern": target.get("consumption_pattern"),
@@ -381,8 +382,10 @@ def validate_selection(selected: pd.DataFrame, source: pd.DataFrame, config: dic
     if selected["replenishable"].map(lambda v: not isinstance(v, bool)).any():
         errors.append("Column 'replenishable' must be Boolean.")
 
-    # Every selected row must exist verbatim in the source CSV.
+    # Every selected row must exist verbatim in the source CSV (image_url may instead come
+    # from image_url_overrides in the config).
     src = source.set_index("Absolute_Url")
+    image_overrides = {k: v for k, v in config.get("image_url_overrides", {}).items() if not k.startswith("_")}
     for _, r in selected.iterrows():
         if r["product_url"] not in src.index:
             errors.append(f"{r['product_id']}: product_url not found in the source CSV.")
@@ -393,7 +396,8 @@ def validate_selection(selected: pd.DataFrame, source: pd.DataFrame, config: dic
             "pack_size": "Quantity", "category": "Category", "subcategory": "SubCategory",
         }
         for out_col, src_col in checks.items():
-            if r[out_col] != s[src_col]:
+            expected = image_overrides.get(r["sku_id"], s[src_col]) if out_col == "image_url" else s[src_col]
+            if r[out_col] != expected:
                 errors.append(f"{r['product_id']}: '{out_col}' differs from source '{src_col}'.")
         for out_col, src_col in (("price", "Price"), ("discount_price", "DiscountPrice")):
             if r[out_col] != to_price(s[src_col]):

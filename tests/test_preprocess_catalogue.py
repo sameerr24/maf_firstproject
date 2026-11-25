@@ -51,12 +51,13 @@ def test_product_types_unique_and_from_config(pipeline_run, config):
     assert set(types) <= {t["product_type"] for t in config["targets"]}
 
 
-def test_selected_rows_come_from_source_csv(pipeline_run, source_csv):
+def test_selected_rows_come_from_source_csv(pipeline_run, source_csv, config):
     src = pd.read_csv(source_csv, dtype=str, keep_default_na=False).set_index("Absolute_Url")
+    images = config.get("image_url_overrides", {})
     for r in pipeline_run["selected"].itertuples():
         row = src.loc[r.product_url]
         assert row["ProductName"] == r.original_product_name
-        assert row["Image_Url"] == r.image_url
+        assert images.get(r.sku_id, row["Image_Url"]) == r.image_url     # replaced images come from config
         assert row["Quantity"] == r.pack_size
         assert float(row["Price"]) == r.price
         assert float(row["DiscountPrice"]) == r.discount_price
