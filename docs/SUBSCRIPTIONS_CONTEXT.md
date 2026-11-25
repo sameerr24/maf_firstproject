@@ -112,6 +112,10 @@ GET /api/products/:id · GET /api/subscriptions/draft?product_id=&rec_id= · GET
 - The total delay is at most 2 days and always before the next cycle (no delay option for daily items). The next cycle stays on the original schedule.
 - On Approve, the order is for the delivery date, i.e. including the delay.
 
+**Draft pre-filled by the recommendation engine** (2026-11-25)
+- `GET /api/subscriptions/draft` asks Sameer's `RecommendationEngine` for the customer's ranked list and uses this product's `suggested_quantity` and `expected_purchase_interval` (rounded to whole days). It also returns `rank`, `score`, `status` and the explanation under `recommendation`.
+- The engine runs on the request's own database connection (`app/subscriptions/recommendations.py`). Its rules apply unchanged: manual orders only, the reference date from `scoring_config.json`, and subscribed products excluded.
+- No recommendation (never or too rarely bought, already subscribed) or an engine error → defaults (1 pack every 7 days). The customer's edited values always win. The recommended values are stored on the subscription (`recommended_quantity`, `recommended_frequency_days`).
+
 ## Still open
-1. Recommendation output for the draft endpoint: endpoint or table, and its shape (recommendation_id, customer_id, product_id, recommended_quantity, recommended_frequency_days, score, rank, reason).
-2. Allowed quantity and frequency bounds; fallback when there's no recommendation.
+- Nothing blocking. Demo prep: rotate the bot token, pick the demo customer, reset test data.
