@@ -1,9 +1,19 @@
 import { apiRequest } from "./client.js";
 
-/** Exchange a customer ID (exactly as stored in the customers table) for a bearer token.
- *  Demo login: no password; the API must run with AUTH_DEMO_LOGIN=true. */
-export function demoLogin(customerId) {
-  return apiRequest("/api/v1/auth/demo-login", { method: "POST", body: { customer_id: customerId } });
+export function getWidgetConfig() {
+  return apiRequest("/api/v1/auth/widget-config");
+}
+
+export function phoneLogin(body) {
+  return apiRequest("/api/v1/auth/login", { method: "POST", body });
+}
+
+export function registerCustomer(body) {
+  return apiRequest("/api/v1/auth/register", { method: "POST", body });
+}
+
+export function logoutCustomer(token) {
+  return apiRequest("/api/v1/auth/logout", { method: "POST", token });
 }
 
 /** Ranked recommendations for the logged-in customer. */

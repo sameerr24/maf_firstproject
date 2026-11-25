@@ -1,7 +1,7 @@
-"""Customer authentication for the Flask app (Sameer's auth module, see docs/SUBSCRIPTIONS_CONTEXT.md).
+"""Customer authentication for the Flask app, shared with the FastAPI API.
 
-Same tokens as the FastAPI recommendation API (``customer_auth``, signed with
-AUTH_SECRET_KEY). Usage in a blueprint:
+The Authorization bearer JWT is signed with ``AUTH_SECRET_KEY``. Refresh tokens stay
+in the FastAPI auth cookie and are never accepted by this decorator. Usage:
 
     from flask import g
     from app.auth import login_required
@@ -14,7 +14,7 @@ AUTH_SECRET_KEY). Usage in a blueprint:
 
 Failure: HTTP 401, header ``WWW-Authenticate: Bearer``, body
 ``{"error": {"code": "unauthorized" | "token_expired", "message": "..."}}``.
-Tokens come from ``POST /api/v1/auth/demo-login`` on the recommendation API (demo).
+Tokens are issued by the phone OTP login or registration endpoints on the recommendation API.
 WhatsApp webhooks must NOT use this; they identify the customer by phone number and
 verify Meta's signature instead.
 """

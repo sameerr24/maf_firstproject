@@ -31,7 +31,6 @@ def test_env(monkeypatch):
     LoggingSender) and a fixed auth secret. Set, not deleted, so load_env() can't re-add them."""
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "")
     monkeypatch.setenv("AUTH_SECRET_KEY", TEST_AUTH_SECRET)
-    monkeypatch.setenv("AUTH_DEMO_LOGIN", "false")
 
 
 def bearer(customer_id: str, secret: str = TEST_AUTH_SECRET) -> dict:

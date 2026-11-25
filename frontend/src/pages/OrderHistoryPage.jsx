@@ -2,7 +2,6 @@ import { useCallback, useEffect, useState } from "react";
 import ProductImage from "../components/ProductImage.jsx";
 import { EmptyState } from "../components/States.jsx";
 import { getOrders } from "../api/orders.js";
-import { clearSession, loadSession } from "../session.js";
 import { formatDate, formatPrice, plural } from "../format.js";
 import "../styles/orders.css";
 
@@ -23,8 +22,8 @@ function formatTime(isoLocal) {
   return `${h % 12 || 12}:${String(m).padStart(2, "0")} ${h < 12 ? "AM" : "PM"}`;
 }
 
-export default function OrderHistoryPage({ onBack }) {
-  const token = loadSession()?.token;
+export default function OrderHistoryPage({ session, onSessionExpired, onBack }) {
+  const token = session?.token;
   const [filter, setFilter] = useState("all");
   const [orders, setOrders] = useState(null);
   const [total, setTotal] = useState(0);
@@ -35,13 +34,12 @@ export default function OrderHistoryPage({ onBack }) {
   const source = FILTERS.find((f) => f.key === filter).source;
 
   const fail = useCallback((e) => {
-    if (e.status === 401) {          // expired or invalid token: sign in again
-      clearSession();
-      window.location.reload();
+    if (e.status === 401) {
+      onSessionExpired();
       return;
     }
     setError(e.message);
-  }, []);
+  }, [onSessionExpired]);
 
   const load = useCallback(() => {
     setError(null);

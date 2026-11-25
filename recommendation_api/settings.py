@@ -12,14 +12,16 @@ Database credentials are NOT read here: the recommendation engine's repository u
 
 Authentication (shared with the Flask app, see customer_auth):
     AUTH_SECRET_KEY            required, >= 32 characters; the app refuses to start without it
-    AUTH_TOKEN_MAX_AGE_SECONDS token lifetime (default 7 days)
-    AUTH_DEMO_LOGIN            true to enable POST /api/v1/auth/demo-login (default false)
+    AUTH_ACCESS_TOKEN_TTL_SECONDS short-lived JWT lifetime (default 900 seconds)
+    AUTH_REFRESH_TOKEN_TTL_SECONDS refresh lifetime (default 30 days)
+    MSG91_WIDGET_ID / MSG91_TOKEN_AUTH  OTP Widget values; widget token is returned to the browser SDK
+    MSG91_AUTHKEY              server-only key used to verify MSG91 access tokens
 """
 
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from customer_auth import AuthSettings
 from database.connection import load_env
@@ -42,6 +44,9 @@ class ApiSettings:
     docs_enabled: bool = True
     host: str = "127.0.0.1"
     port: int = 8000
+    msg91_widget_id: str | None = None
+    msg91_token_auth: str | None = field(default=None, repr=False)
+    msg91_authkey: str | None = field(default=None, repr=False)
 
     @classmethod
     def from_env(cls) -> "ApiSettings":
@@ -57,4 +62,7 @@ class ApiSettings:
         return cls(auth=AuthSettings.from_env(), cors_origins=cors, log_level=level,
                    scoring_config_path=(os.getenv("REC_API_SCORING_CONFIG") or "").strip() or None,
                    docs_enabled=_bool(os.getenv("REC_API_DOCS"), True),
-                   host=os.getenv("REC_API_HOST", "127.0.0.1").strip() or "127.0.0.1", port=int(port))
+                   host=os.getenv("REC_API_HOST", "127.0.0.1").strip() or "127.0.0.1", port=int(port),
+                   msg91_widget_id=(os.getenv("MSG91_WIDGET_ID") or "").strip() or None,
+                   msg91_token_auth=(os.getenv("MSG91_TOKEN_AUTH") or "").strip() or None,
+                   msg91_authkey=(os.getenv("MSG91_AUTHKEY") or "").strip() or None)

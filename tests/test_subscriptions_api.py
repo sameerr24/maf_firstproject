@@ -52,14 +52,13 @@ def test_token_signed_with_other_key_is_rejected(client):
 
 
 def test_flask_accepts_the_same_tokens_as_the_recommendation_api(client, monkeypatch):
-    """A token from the FastAPI demo login (same AUTH_SECRET_KEY) works on the Flask routes."""
+    """A JWT issued by the FastAPI auth service works on the Flask routes."""
     from fastapi.testclient import TestClient
 
     from recommendation_api.factory import create_app as create_rec_api
 
-    monkeypatch.setenv("AUTH_DEMO_LOGIN", "true")
     rec_api = create_rec_api()
-    token = rec_api.state.token_service.issue(ME)        # what POST /api/v1/auth/demo-login returns
+    token = rec_api.state.token_service.issue(ME)
     assert TestClient(rec_api).get("/api/v1/auth/me", headers={"Authorization": f"Bearer {token}"}).json() == \
         {"customer_id": ME}
     r = client.get("/api/subscriptions", headers={"Authorization": f"Bearer {token}"})

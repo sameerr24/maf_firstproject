@@ -23,8 +23,9 @@ from recommendation_api.service import RecommendationService
 from recommendation_api.settings import ApiSettings
 
 
-def create_app(settings: ApiSettings | None = None, service: RecommendationService | None = None) -> FastAPI:
-    """Build the app. ``service`` can be injected (tests, alternative repositories)."""
+def create_app(settings: ApiSettings | None = None, service: RecommendationService | None = None,
+               auth_service=None) -> FastAPI:
+    """Build the app. Services can be injected in tests without opening a database."""
     settings = settings or ApiSettings.from_env()
     if settings.auth is None:
         raise AuthConfigError("ApiSettings.auth is required: set AUTH_SECRET_KEY (see .env.example).")
@@ -41,16 +42,15 @@ def create_app(settings: ApiSettings | None = None, service: RecommendationServi
     )
     app.state.settings = settings
     app.state.recommendation_service = service
+    app.state.customer_auth_service = auth_service
     app.state.token_service = TokenService(settings.auth)
 
     register_middleware(app)
-    # Tokens travel in the Authorization header (not cookies), so credentials mode stays off.
-    app.add_middleware(CORSMiddleware, allow_origins=list(settings.cors_origins), allow_credentials=False,
+    app.add_middleware(CORSMiddleware, allow_origins=list(settings.cors_origins), allow_credentials=True,
                        allow_methods=["GET", "POST", "OPTIONS"], allow_headers=["Authorization", "Content-Type",
                                                                                 "X-Request-ID"],
                        expose_headers=["X-Request-ID", "X-Process-Time-Ms"])
     register_exception_handlers(app)
     app.include_router(router)
     return app
-
 

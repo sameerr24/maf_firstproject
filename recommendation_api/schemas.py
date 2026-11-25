@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -63,16 +63,30 @@ class ErrorResponse(BaseModel):
     error: ErrorBody
 
 
-class DemoLoginRequest(BaseModel):
+class PhoneAuthRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    customer_id: str = Field(min_length=1, max_length=64, examples=["CUST-0001"])
+    msg91_access_token: str = Field(min_length=1, max_length=4096)
+    phone_number: str = Field(min_length=1, max_length=64)
+    region: str = Field(min_length=2, max_length=2, pattern="^[A-Za-z]{2}$")
 
 
-class TokenResponse(BaseModel):
+class RegistrationRequest(PhoneAuthRequest):
+    customer_name: str | None = Field(None, max_length=100)
+    household_size: int = Field(default=1, ge=1, le=50)
+    preferred_weekday: Literal["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+
+class AuthResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     expires_in: int = Field(description="Seconds until the token expires")
     customer_id: str
+    created: bool = False
+
+
+class WidgetConfig(BaseModel):
+    widget_id: str
+    token_auth: str
 
 
 class CurrentCustomer(BaseModel):

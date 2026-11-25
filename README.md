@@ -837,7 +837,7 @@ recommendation_engine/
 recommendation_api/
 ├── main.py          ASGI entry point (`app = create_app()`)
 ├── factory.py       create_app(): FastAPI app, CORS, middleware, routes
-├── routes.py        recommendations (/me and /{customer_id}), auth (demo-login, me), health
+├── routes.py        recommendations, phone auth, health
 ├── auth.py          bearer-token dependency, "own data only" check
 ├── service.py       calls the engine, returns the Pydantic response
 ├── schemas.py       Pydantic response and error models
@@ -847,7 +847,11 @@ recommendation_api/
 └── __main__.py      `python -m recommendation_api`
 
 customer_auth/
-└── tokens.py        AuthSettings, TokenService (issue/verify), auth errors
+├── tokens.py        JWT access tokens shared by FastAPI and Flask
+├── msg91.py         server-side MSG91 Widget token verification
+├── phones.py        phone-number normalization and matching
+├── service.py       login/registration flow
+└── storage.py       refresh sessions and auth rate limits
 app/auth.py          Flask adapter: @login_required sets g.customer_id (new file in app/)
 ```
 
@@ -875,8 +879,8 @@ and the Pydantic schemas are the API models.
 - **One `.env`, separate variable names.** Both read `DATABASE_URL` and
   `AUTH_SECRET_KEY`. Flask also reads `FLASK_SECRET_KEY`; FastAPI reads the optional
   `REC_API_*` variables.
-- **One login for both apps.** A token from `POST /api/v1/auth/demo-login` works on
-  the FastAPI routes and on any Flask route decorated with `app.auth.login_required`.
+- **One login for both apps.** A short-lived access token from phone OTP sign-in works
+  on FastAPI routes and on any Flask route decorated with `app.auth.login_required`.
 - **No dependency conflicts.** Flask (Werkzeug/Jinja2/itsdangerous) and FastAPI
   (Starlette/Pydantic) share no pinned packages; `pip check` is clean.
 - **No existing Flask files were changed.** The only addition inside `app/` is the
@@ -1061,30 +1065,44 @@ and values must be in range. A bad edit fails immediately with a clear message.
 | `DATABASE_URL` | engine, Flask, scripts | the shared Supabase database (see above) |
 | `TEST_DATABASE_URL` | tests | local test database only |
 | `FLASK_SECRET_KEY` | Flask | |
-| `AUTH_SECRET_KEY` | FastAPI, Flask | **required**, ≥ 32 characters; signs login tokens. Same value everywhere tokens must be accepted. The `.env.example` placeholder is rejected |
-| `AUTH_TOKEN_MAX_AGE_SECONDS` | FastAPI, Flask | token lifetime, default 604800 (7 days) |
-| `AUTH_DEMO_LOGIN` | FastAPI | `true` enables the password-less demo login. Default `false`; never enable in production |
+| `AUTH_SECRET_KEY` | FastAPI, Flask | **required**, ≥ 32 characters; signs JWT access tokens. Same value everywhere tokens must be accepted. The `.env.example` placeholder is rejected |
+| `AUTH_ACCESS_TOKEN_TTL_SECONDS` | FastAPI, Flask | short-lived access-token lifetime; default 900 seconds |
+| `AUTH_REFRESH_TOKEN_TTL_SECONDS` | FastAPI | refresh-session lifetime; default 30 days |
+| `AUTH_COOKIE_SECURE` | FastAPI | secure flag for the HttpOnly refresh cookie; default `true` |
+| `MSG91_WIDGET_ID`, `MSG91_TOKEN_AUTH` | FastAPI, MSG91 Web Widget | Widget configuration; token auth is public and returned by the API |
+| `MSG91_AUTHKEY` | FastAPI | server-only key used to verify MSG91 access tokens |
 | `REC_API_CORS_ORIGINS` | FastAPI | comma-separated; default `http://localhost:5173,http://localhost:3000` |
 | `REC_API_LOG_LEVEL`, `REC_API_DOCS`, `REC_API_HOST`, `REC_API_PORT`, `REC_API_SCORING_CONFIG` | FastAPI | optional; see `.env.example` |
 
 ### Install and run
 
 ```bash
-pip install -r requirements.txt            # adds fastapi, uvicorn, httpx
+.venv/bin/pip install -r requirements.txt
 
 # 1) Engine only (no server). Read-only.
-python scripts/run_recommendations.py --customer-id CUST-0001
-python scripts/run_recommendations.py --customer-id CUST-0001 --limit 5 --as-of 2026-11-01
-python scripts/run_recommendations.py --customer-id CUST-0001 --json   # same JSON as the API
+.venv/bin/python scripts/run_recommendations.py --customer-id CUST-0001
+.venv/bin/python scripts/run_recommendations.py --customer-id CUST-0001 --limit 5 --as-of 2026-11-01
+.venv/bin/python scripts/run_recommendations.py --customer-id CUST-0001 --json   # same JSON as the API
 
 # 2) FastAPI (terminal 1). Needs AUTH_SECRET_KEY in .env (refuses to start without it)
-uvicorn recommendation_api.main:app --reload --port 8000
-#    or: python -m recommendation_api            (uses REC_API_HOST / REC_API_PORT)
+.venv/bin/python -m uvicorn recommendation_api.main:app --reload --port 8000
+#    or: .venv/bin/python -m recommendation_api   (uses REC_API_HOST / REC_API_PORT)
 #    interactive docs: http://localhost:8000/docs
 
 # 3) Flask (terminal 2), unchanged
-flask --app run run --port 5001
+.venv/bin/flask --app run run --port 5001
 ```
+
+For phone authentication, set `MSG91_WIDGET_ID`, `MSG91_TOKEN_AUTH`, and the
+server-only `MSG91_AUTHKEY` in `.env`, then manually apply
+[`migrations/sql/003_customer_auth_sessions.sql`](./migrations/sql/003_customer_auth_sessions.sql)
+to the database before starting either app. Restrict the widget's allowed domains in
+MSG91. The widget token is intentionally available to browser clients; never expose
+`MSG91_AUTHKEY`. Existing customers can sign in only if their verified number is already
+associated with `customers.phone_e164`; registration creates a new customer without
+granting messaging consent. The browser uses MSG91's hosted Web SDK
+(`https://verify.msg91.com/otp-provider.js`) with `exposeMethods: true`; it does not use
+the `@msg91comm/sendotp-sdk` mobile integration.
 
 The engine can also be called directly from Python:
 
@@ -1099,32 +1117,37 @@ RecommendationEngine(repository=InMemoryPurchaseRepository(customers, records, p
 
 Every recommendation route needs `Authorization: Bearer <token>`.
 
-- **Token format.** Tokens are signed with `AUTH_SECRET_KEY` (itsdangerous, already a
-  Flask dependency). They contain only the customer ID and the issue time, and expire
-  after `AUTH_TOKEN_MAX_AGE_SECONDS`.
-- **Not encrypted.** A token is signed, not encrypted, so never put secrets in it.
+- **Token format.** Tokens are short-lived HS256 JWTs signed with `AUTH_SECRET_KEY`
+  (default lifetime 15 minutes). Claims include `sub`, `iat`, `exp`, `iss`, `aud`, and
+  `jti`. They are signed, not encrypted, so never put secrets in them.
 - **Ownership.** A customer can only read their own recommendations. Another
   customer's ID returns **403**.
 - **Same token for Flask.** The token works on the Flask app too: decorate a view with
   `app.auth.login_required` and read `g.customer_id`.
-- **Webhooks.** WhatsApp webhooks don't use tokens. They identify the customer by phone
-  number and verify Meta's signature.
+- **Webhooks.** Chat/webhook flows don't use bearer tokens; they continue to identify
+  customers using their linked chat or provider signature.
 
-**Demo login.** There are no passwords for the 100 synthetic customers yet. With
-`AUTH_DEMO_LOGIN=true`, a token can be requested for any existing customer:
+**Phone OTP login.** The 100 synthetic customers do not have passwords. With
+the MSG91 Web OTP Widget, a customer verifies a phone number and then calls the phone-login
+endpoint. For example, after the browser SDK verifies an OTP:
 
 ```bash
-curl -X POST localhost:8000/api/v1/auth/demo-login \
-     -H 'Content-Type: application/json' -d '{"customer_id": "CUST-0001"}'
-# {"access_token": "...", "token_type": "bearer", "expires_in": 604800, "customer_id": "CUST-0001"}
+curl -X POST localhost:8000/api/v1/auth/login \
+     -H 'Content-Type: application/json' \
+     -d '{"msg91_access_token":"<verified-widget-token>","phone_number":"+919800000001","region":"IN"}'
+# {"access_token": "...", "token_type": "bearer", "expires_in": 900, "customer_id": "CUST-0001", "created": false}
 
 curl localhost:8000/api/v1/recommendations/me -H "Authorization: Bearer <access_token>"
 ```
 
-- With demo login disabled, the route answers 404, as if it didn't exist.
-- A real login (for example a one-time code sent to `customers.phone_e164` on WhatsApp)
-  only needs to replace this one endpoint. The tokens, the dependency and the Flask
-  decorator stay the same.
+- FastAPI independently verifies the Widget access token with `MSG91_AUTHKEY`; a phone number
+  supplied by the browser alone is never sufficient to authenticate.
+- Refresh tokens are opaque, stored hashed in the database, rotated on use, and sent
+  only in a Secure/HttpOnly/SameSite=Strict cookie. The browser keeps the access token
+  in memory and refreshes it at startup or after an expired API request.
+- Apply migration `003_customer_auth_sessions.sql` before using login or refresh.
+- Existing customers need a verified phone association in `customers.phone_e164`.
+  Registration creates a new customer and does not opt them into messaging.
 - In `/docs`, click **Authorize** and paste the token to try the endpoints.
 
 ### API
@@ -1133,8 +1156,12 @@ curl localhost:8000/api/v1/recommendations/me -H "Authorization: Bearer <access_
 |---|---|---|
 | `GET /api/v1/recommendations/me` | token | recommendations for the logged-in customer (use this from React) |
 | `GET /api/v1/recommendations/{customer_id}` | token for that customer | same, with an explicit ID |
-| `POST /api/v1/auth/demo-login` | none, demo only | get a token for a customer ID |
-| `GET /api/v1/auth/me` | token | `{"customer_id": ...}` of the caller |
+| `GET /api/v1/auth/widget-config` | none | public MSG91 Widget configuration for the browser SDK |
+| `POST /api/v1/auth/login` | verified MSG91 token | sign in an existing customer by phone |
+| `POST /api/v1/auth/register` | verified MSG91 token | register a customer with the verified phone |
+| `POST /api/v1/auth/refresh` | refresh cookie | rotate refresh session and issue a new access token |
+| `POST /api/v1/auth/logout` | refresh cookie | revoke refresh session and clear cookie |
+| `GET /api/v1/auth/me` | access token | `{"customer_id": ...}` of the caller |
 | `GET /api/v1/health` | none | liveness check, no database |
 
 Query parameters of the recommendation routes:
@@ -1212,15 +1239,20 @@ logged.
 ```js
 const API = import.meta.env.VITE_RECOMMENDATION_API ?? "http://localhost:8000";
 
-export async function demoLogin(customerId) {
-  const res = await fetch(`${API}/api/v1/auth/demo-login`, {
+export async function phoneLogin(msg91AccessToken, phoneNumber) {
+  const res = await fetch(`${API}/api/v1/auth/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ customer_id: customerId }),
+    credentials: "include",
+    body: JSON.stringify({
+      msg91_access_token: msg91AccessToken,
+      phone_number: phoneNumber,
+      region: "IN",
+    }),
   });
   const body = await res.json();
   if (!res.ok) throw new Error(body.error?.message ?? "Login failed");
-  return body.access_token;      // keep it in memory or sessionStorage
+  return body.access_token;      // keep it in memory
 }
 
 export async function fetchRecommendations(token, limit = 10) {
@@ -1247,10 +1279,10 @@ export async function fetchRecommendations(token, limit = 10) {
 ### Tests
 
 ```bash
-pytest tests/test_recommendation_engine.py   # engine maths and rules, no database
-pytest tests/test_recommendation_api.py      # FastAPI via TestClient + in-memory data
-pytest tests/test_recommendation_sql.py      # needs TEST_DATABASE_URL (local), else skipped
-pytest tests/test_customer_auth.py           # tokens + Flask decorator, no database
+.venv/bin/python -m pytest tests/test_recommendation_engine.py   # engine maths and rules, no database
+.venv/bin/python -m pytest tests/test_recommendation_api.py      # FastAPI via TestClient + in-memory data
+.venv/bin/python -m pytest tests/test_recommendation_sql.py      # needs TEST_DATABASE_URL (local), else skipped
+.venv/bin/python -m pytest tests/test_customer_auth.py           # tokens + Flask decorator, no database
 ```
 
 What the tests cover:
@@ -1265,9 +1297,9 @@ What the tests cover:
 - CORS and request IDs;
 - the lapse factor, and that a lapsed habit ranks below a currently due product;
 - auth: missing, forged, wrong-secret, Basic and expired tokens give 401; another
-  customer's ID gives 403; the demo-login flow; demo login disabled gives 404; the
-  app refuses to start without a secret; placeholder secrets are rejected; a token
-  issued by FastAPI is accepted by the Flask decorator;
+  customer's ID gives 403; OTP verification, registration, rate limits, refresh
+  rotation/reuse and logout; the app refuses to start without a secret; placeholder
+  secrets are rejected; a FastAPI token is accepted by the Flask decorator;
 - that the engine imports neither Flask nor FastAPI;
 - that the SQL repository and an in-memory repository built from the CSVs give
   identical recommendations;
@@ -1281,10 +1313,11 @@ What the tests cover:
 - **Lapse thresholds are a judgement call.** The defaults (2× the interval, plus 7 days
   for fast products) were checked against the synthetic segments: the lapsed segment
   has 88 lapsed products, the regular segment 14. Tune them with real data.
-- **Demo login only.** Anyone who can reach the API with `AUTH_DEMO_LOGIN=true` can act
-  as any customer. Fine for the demo; switch it off and add a real login before real
-  users. Tokens can't be revoked individually; rotating `AUTH_SECRET_KEY` logs
-  everyone out.
+- **Phone auth setup.** MSG91 credentials and migration 003 are required. The Widget
+  token is intentionally public; restrict its allowed domains in MSG91. The server
+  Authkey must remain private. OTP sends occur directly through MSG91's browser Widget,
+  so provider-side limits and domain restrictions are also required in addition to
+  API-side login/refresh rate limits.
 - **Latency.** About 0.8 s per request from India to the Singapore Supabase region,
   mostly network round trips. The first request also opens the connection pool.
 - **Subscription feedback.** Skips, delays and edits from `delivery_occurrences` are not
@@ -1295,12 +1328,12 @@ What the tests cover:
 
 A React + Vite storefront page for the recommendation API.
 
-1. **Sign in.**
-   - Type a customer ID exactly as stored in Supabase (`customers.customer_id`, e.g.
-     `CUST-0001`; case-sensitive).
-   - It calls the demo login (no password), so the API must run with
-     `AUTH_DEMO_LOGIN=true`.
-   - Unknown IDs get a clear error. The token is kept in `sessionStorage`.
+1. **Sign in or create an account.**
+   - Enter a phone number and verify the OTP with the MSG91 Widget.
+   - Sign-in works only when the verified phone is associated with a customer. New
+     users can register; registration does not opt them into messaging.
+   - The access token stays in memory. An HttpOnly refresh cookie restores a session
+     after a page reload.
 2. **Your top 10 reorder picks.** The customer's recommendations in rank order, in a
    grid that scrolls inside its own panel. Each card shows:
    - the rank and a status badge (Overdue, Due now, Due very soon, Coming up, Stocked up,
@@ -1325,7 +1358,7 @@ A React + Vite storefront page for the recommendation API.
 # terminal 1: recommendation API. Use the project's .venv: other Python installs
 # (e.g. Anaconda) may lack the PostgreSQL driver and fail with HTTP 500.
 source .venv/bin/activate
-uvicorn recommendation_api.main:app --reload --port 8000
+.venv/bin/python -m uvicorn recommendation_api.main:app --reload --port 8000
 # terminal 2: frontend
 cd frontend
 npm install        # first time only
@@ -1338,7 +1371,7 @@ npm run dev        # http://localhost:5173
 
 **States handled:**
 - loading skeletons;
-- an unknown customer ID;
+- an unregistered phone number;
 - an API that can't be reached (message and **Try again**);
 - an expired token (back to sign-in);
 - a customer without purchase history ("No recommendations yet").
@@ -1350,10 +1383,10 @@ an illustrated tile for the product's category.
 ```
 frontend/src/
 ├── App.jsx                      sign-in, recommendations, subscription page (hash routes)
-├── session.js                   token + selected product in sessionStorage
+├── session.js                   selected recommendation in sessionStorage (tokens stay in memory)
 ├── api/client.js                fetch wrapper, standard error shape
-├── api/recommendations.js       demo login, /recommendations/me
-├── pages/LoginPage.jsx          customer ID sign-in
+├── api/recommendations.js       phone auth, /recommendations/me
+├── pages/LoginPage.jsx          MSG91 phone OTP sign-in and registration
 ├── pages/RecommendationsPage.jsx  top 10 in a scrollable grid
 ├── pages/SubscriptionPage.jsx   placeholder for the subscription flow
 ├── components/                  Header (Switch customer), ProductCard, ProductImage, States

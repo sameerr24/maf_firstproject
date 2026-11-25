@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { getPendingDeliveries } from "../api/subscriptions.js";
-import { loadSession } from "../session.js";
+import { getApiAccessToken } from "../api/client.js";
 
 // Count of delivery reminders waiting for a reply, shown on the header's "My subscriptions"
 // link (subscriptions module). Polls on its own; the panel on the subscriptions page also
@@ -14,7 +14,7 @@ export default function PendingBadge() {
 
   useEffect(() => {
     const load = () => {
-      const token = loadSession()?.token;
+      const token = getApiAccessToken();
       if (!token) return;
       getPendingDeliveries(token).then((d) => setCount(d.deliveries.length)).catch(() => {});  // badge is best effort
     };
