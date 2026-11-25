@@ -5,3 +5,8 @@ psycopg[binary]>=3.1,<4
 python-dotenv>=1.0
 pytest>=7.0
 Flask>=3.0,<4
+# Recommendation API (FastAPI; runs as its own process next to Flask)
+fastapi>=0.110,<1
+uvicorn>=0.29,<1
+# Test client for the FastAPI tests
+httpx>=0.27,<1
