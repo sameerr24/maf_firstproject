@@ -42,6 +42,9 @@
   display: grid; grid-template-columns: 88px 1fr; gap: .9rem; padding: 1rem; }
 .sub-card--highlight { border-color: var(--brand-600); box-shadow: 0 0 0 3px var(--brand-100), var(--shadow); }
 .sub-card--paused .sub-card__media { filter: grayscale(.6); opacity: .8; }
+.sub-card--cancelled { background: var(--muted-bg); box-shadow: none; }
+.sub-card--cancelled .sub-card__media { filter: grayscale(1); opacity: .6; }
+.sub-card--cancelled .sub-card__title, .sub-card--cancelled .facts { color: var(--ink-2); }
 .sub-card__media .product-image { aspect-ratio: 1 / 1; }
 .sub-card__media .product-image__cat { display: none; }
 .sub-card__body { display: grid; gap: .3rem; align-content: start; min-width: 0; }
