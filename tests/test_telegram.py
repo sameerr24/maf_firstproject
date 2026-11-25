@@ -301,3 +301,35 @@ def test_unexpected_error_rolls_back_and_apologises(engine, tg, monkeypatch):
     monkeypatch.undo()
     assert process_update(engine, tg, update, now=at(27, 10)) == "processed"   # not recorded, so retryable
     assert occ_state(engine, occ_id)[0] == "SKIPPED"
+
+
+def test_polling_reconnects_after_network_error(engine):
+    import threading
+    from app.notifications import telegram_bot
+
+    class Flaky(FakeTelegram):
+        def __init__(self):
+            super().__init__()
+            self.polls, self.resets, self.stop = 0, 0, threading.Event()
+
+        def get_me(self):
+            return {"username": "test_bot"}
+
+        def get_updates(self, offset):
+            self.polls += 1
+            if self.polls == 1:
+                raise TimeoutError("read timed out")      # e.g. laptop woke from sleep
+            self.stop.set()
+            return [text_msg(4242)]
+
+        def reset(self):
+            self.resets += 1
+
+    tg = Flaky()
+    original_sleep = telegram_bot.time.sleep
+    telegram_bot.time.sleep = lambda s: None
+    try:
+        telegram_bot.poll_forever(engine, tg, stop=tg.stop)
+    finally:
+        telegram_bot.time.sleep = original_sleep
+    assert tg.resets == 1 and tg.polls == 2 and "Welcome" in tg.last_text()

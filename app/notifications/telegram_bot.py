@@ -282,9 +282,12 @@ def poll_forever(engine: Engine, client, stop: threading.Event | None = None) ->
     while stop is None or not stop.is_set():
         try:
             updates = client.get_updates(offset)
-        except Exception:
-            log.warning("getUpdates failed; retrying in 5s", exc_info=True)
-            time.sleep(5)
+        except Exception as e:
+            # Typically a dead connection after sleep or a network blip: start a fresh one.
+            log.warning("Polling Telegram failed (%s); reconnecting in 2s", type(e).__name__)
+            if hasattr(client, "reset"):
+                client.reset()
+            time.sleep(2)
             continue
         for update in updates:
             process_update(engine, client, update)

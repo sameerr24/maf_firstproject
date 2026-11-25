@@ -26,6 +26,12 @@ class TelegramClient:
         self._timeout = timeout
         self._http = requests.Session()        # keep-alive: one TLS handshake, not one per call
 
+    def reset(self) -> None:
+        """Drop pooled connections, e.g. after a network drop or the laptop waking from sleep;
+        otherwise requests can keep waiting on dead sockets."""
+        self._http.close()
+        self._http = requests.Session()
+
     def call(self, method: str, _http_timeout: float | None = None, **params: Any) -> Any:
         """POST a Bot API method. `_http_timeout` is the HTTP timeout; any other keyword
         (including Telegram's own `timeout` for long polling) is sent as a parameter."""
@@ -41,7 +47,7 @@ class TelegramClient:
     def get_me(self) -> dict:
         return self.call("getMe")
 
-    def get_updates(self, offset: int | None, timeout: int = 25) -> list[dict]:
+    def get_updates(self, offset: int | None, timeout: int = 20) -> list[dict]:
         return self.call("getUpdates", _http_timeout=timeout + 10, offset=offset, timeout=timeout,
                          allowed_updates=["message", "callback_query"])
 
