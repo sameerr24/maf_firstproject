@@ -9,6 +9,7 @@ from sqlalchemy import text
 
 from app.config import CONFIGS
 from app.db import db_session, init_db
+from app.cors import init_cors
 from app.errors import register_error_handlers
 
 
@@ -24,6 +25,7 @@ def create_app(config_name: str | None = None, overrides: dict | None = None) ->
 
     init_db(app)
     register_error_handlers(app)
+    init_cors(app)
 
     from app.notifications import bp as notifications_bp
     from app.orders import bp as orders_bp
