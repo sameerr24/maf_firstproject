@@ -116,6 +116,33 @@ def _on_contact(session: Session, msg: dict, chat_id: int) -> list[Out]:
 # --------------------------------------------------------------------------- #
 # Button taps
 # --------------------------------------------------------------------------- #
+def _next_day(r: dict) -> str:
+    return fmt_day(dt.date.fromisoformat(r["next_delivery_date"])) if r["next_delivery_date"] else "-"
+
+
+# Confirmation texts, shared with the website (app/notifications/chat_sync.py) so a reply made
+# on either channel reads the same in the chat. `product` is already HTML-escaped.
+def approved_text(product: str, when: str, r: dict) -> str:
+    if r["status"] == "out_of_stock":
+        return (f"Sorry, {product} just went out of stock, so this delivery couldn't be placed. "
+                f"You have not been charged.\n\nNext delivery: {_next_day(r)}.")
+    return (f"✅ <b>Order placed</b>\n{r['quantity']} x {product}\nDelivery: {when}, {_esc(r['slot'])}\n"
+            f"Total: ₹{r['total']}\nOrder ID: {_esc(r['order_id'])}\n\nNext delivery: {_next_day(r)}.")
+
+
+def skipped_text(product: str, when: str, r: dict) -> str:
+    return f"Skipped your {when} delivery of {product}. You have not been charged.\n\nNext delivery: {_next_day(r)}."
+
+
+def delayed_text(product: str, new: dt.date) -> str:
+    return (f"Moved your {product} delivery to {fmt_day(new)}. We'll ask you to approve it again on "
+            f"{fmt_day(new - dt.timedelta(days=1))}; nothing is charged until you approve.")
+
+
+def stopped_text(product: str) -> str:
+    return f"Your {product} subscription is cancelled. You won't be charged again."
+
+
 def _reminder_buttons(occ_id: int) -> dict:
     return _buttons(*((BUTTON_LABELS[a], f"{a}:{occ_id}") for a in ("APPROVE", "SKIP", "STOP")))
 
@@ -141,13 +168,7 @@ def _dispatch(session: Session, customer_id: str, chat_id: int, data: str, now) 
         if arg is None or not 0 <= arg < len(DELIVERY_SLOTS):
             raise ValidationError("Please pick one of the slots shown.")
         r = svc.approve_delivery(session, customer_id, occ_id, DELIVERY_SLOTS[arg], now=now)
-        nxt = fmt_day(dt.date.fromisoformat(r["next_delivery_date"])) if r["next_delivery_date"] else "-"
-        if r["status"] == "out_of_stock":
-            return [_send(chat_id, f"Sorry, {product} just went out of stock, so this delivery couldn't be "
-                                   f"placed. You have not been charged.\n\nNext delivery: {nxt}.")]
-        return [_send(chat_id, f"✅ <b>Order placed</b>\n{r['quantity']} x {product}\n"
-                               f"Delivery: {when}, {_esc(r['slot'])}\nTotal: ₹{r['total']}\n"
-                               f"Order ID: {_esc(r['order_id'])}\n\nNext delivery: {nxt}.")]
+        return [_send(chat_id, approved_text(product, when, r))]
 
     if action == "SKIP":
         svc.ensure_awaiting_reply(sub, occ, now)
@@ -158,16 +179,11 @@ def _dispatch(session: Session, customer_id: str, chat_id: int, data: str, now) 
 
     if action == "SKIPCONF":
         r = svc.skip_delivery(session, customer_id, occ_id, now=now)
-        nxt = fmt_day(dt.date.fromisoformat(r["next_delivery_date"])) if r["next_delivery_date"] else "-"
-        return [_send(chat_id, f"Skipped your {when} delivery of {product}. You have not been charged.\n\n"
-                               f"Next delivery: {nxt}.")]
+        return [_send(chat_id, skipped_text(product, when, r))]
 
     if action == "DELAY":
         occ = svc.delay_delivery(session, customer_id, occ_id, arg or 0, now=now)
-        new = svc.delivery_date(occ)
-        return [_send(chat_id, f"Moved your {product} delivery to {fmt_day(new)}. We'll ask you to approve it "
-                               f"again on {fmt_day(new - dt.timedelta(days=1))}; nothing is charged "
-                               "until you approve.")]
+        return [_send(chat_id, delayed_text(product, svc.delivery_date(occ)))]
 
     if action == "STOP":
         if sub.status == "CANCELLED":
@@ -177,7 +193,7 @@ def _dispatch(session: Session, customer_id: str, chat_id: int, data: str, now) 
 
     if action == "STOPCONF":
         svc.cancel_subscription(session, customer_id, sub.subscription_id)
-        return [_send(chat_id, f"Your {product} subscription is cancelled. You won't be charged again.")]
+        return [_send(chat_id, stopped_text(product))]
 
     if action == "BACK":
         svc.ensure_awaiting_reply(sub, occ, now)

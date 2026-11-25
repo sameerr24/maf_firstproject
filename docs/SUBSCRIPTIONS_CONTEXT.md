@@ -66,7 +66,7 @@ RLS is enabled with no policies. Flask connects with the postgres connection str
 - Local dev: expose Flask with `ngrok http 5000` and set the callback URL in the Meta dashboard. The temporary token expires after ~24h, so use a System User token for the demo.
 
 ## API endpoints (Shubham)
-GET /api/products/:id · GET /api/subscriptions/draft?product_id=&rec_id= · GET/POST /api/subscriptions · PATCH/DELETE /api/subscriptions/:id · POST /api/subscriptions/:id/skip · GET /api/orders · GET/POST /webhooks/whatsapp · POST /api/dev/run-scheduler
+GET /api/products/:id · GET /api/subscriptions/draft?product_id=&rec_id= · GET/POST /api/subscriptions · PATCH/DELETE /api/subscriptions/:id · POST /api/subscriptions/:id/skip · GET /api/subscriptions/deliveries/pending · POST /api/subscriptions/deliveries/:occurrence_id/{approve,skip,delay} · GET /api/orders · GET/POST /webhooks/whatsapp · POST /api/dev/run-scheduler
 
 ## Decisions (agreed with Sameer, 2026-11-24)
 
@@ -116,6 +116,11 @@ GET /api/products/:id · GET /api/subscriptions/draft?product_id=&rec_id= · GET
 - `GET /api/subscriptions/draft` asks Sameer's `RecommendationEngine` for the customer's ranked list and uses this product's `suggested_quantity` and `expected_purchase_interval` (rounded to whole days). It also returns `rank`, `score`, `status` and the explanation under `recommendation`.
 - The engine runs on the request's own database connection (`app/subscriptions/recommendations.py`). Its rules apply unchanged: manual orders only, the reference date from `scoring_config.json`, and subscribed products excluded.
 - No recommendation (never or too rarely bought, already subscribed) or an engine error → defaults (1 pack every 7 days). The customer's edited values always win. The recommended values are stored on the subscription (`recommended_quantity`, `recommended_frequency_days`).
+
+**Reminders answerable on the website too** (2026-11-25)
+- Every reminder sent in chat also shows on the website (a "Waiting for your reply" panel on the subscriptions page, plus a count badge on the header link) with the same options: Approve with a slot, Skip, Delay 1 or 2 days, Stop. The web endpoints call the same service functions as the bot, so the rules (deadline, delay limits, stock check) are identical.
+- Whichever channel answers first wins; the other gets "no longer waiting for your reply" (409 `delivery_finalised`), so a delivery can't be ordered twice.
+- After a website reply, `app/notifications/chat_sync.py` removes the reminder's buttons in Telegram and posts the same confirmation the bot would send. This is best effort: a Telegram failure never fails the website action. Cancel, pause and "Skip next" on the dashboard clear an open reminder the same way.
 
 ## Still open
 - Nothing blocking. Demo prep: rotate the bot token, pick the demo customer, reset test data.
