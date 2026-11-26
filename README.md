@@ -1331,7 +1331,9 @@ A React + Vite storefront page for the recommendation API.
 1. **Sign in or create an account.**
    - Enter a phone number and verify the OTP with the MSG91 Widget.
    - Sign-in works only when the verified phone is associated with a customer. New
-     users can register; registration does not opt them into messaging.
+     users can register with their name; household size defaults to one, and their
+     signup weekday is used as the initial preferred delivery day. Registration does
+     not opt them into messaging.
    - The access token stays in memory. An HttpOnly refresh cookie restores a session
      after a page reload.
 2. **Your top 10 reorder picks.** The customer's recommendations in rank order, in a

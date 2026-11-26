@@ -11,7 +11,6 @@ const COUNTRIES = [
   ["IN", "India (+91)"], ["US", "United States (+1)"], ["GB", "United Kingdom (+44)"],
   ["CA", "Canada (+1)"], ["AU", "Australia (+61)"],
 ];
-const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const RESEND_SECONDS = 30;
 
 export default function LoginPage({ onLogin, initialError = null }) {
@@ -19,8 +18,6 @@ export default function LoginPage({ onLogin, initialError = null }) {
   const [phone, setPhone] = useState("");
   const [region, setRegion] = useState("IN");
   const [customerName, setCustomerName] = useState("");
-  const [householdSize, setHouseholdSize] = useState("1");
-  const [preferredWeekday, setPreferredWeekday] = useState("");
   const [otp, setOtp] = useState("");
   const [requestId, setRequestId] = useState(null);
   const [normalizedPhone, setNormalizedPhone] = useState(null);
@@ -137,12 +134,6 @@ export default function LoginPage({ onLogin, initialError = null }) {
       setError("Enter the OTP sent to your phone.");
       return;
     }
-    if (mode === "register" &&
-        (!preferredWeekday || !Number.isInteger(Number(householdSize)) ||
-         Number(householdSize) < 1 || Number(householdSize) > 50)) {
-      setError("Choose a delivery day and enter a household size from 1 to 50.");
-      return;
-    }
     setPending(true);
     try {
       const verification = await verifyMsg91Otp(otp, requestId);
@@ -158,8 +149,6 @@ export default function LoginPage({ onLogin, initialError = null }) {
         ? await registerCustomer({
           ...credentials,
           customer_name: customerName.trim() || null,
-          household_size: Number(householdSize),
-          preferred_weekday: preferredWeekday,
         })
         : await phoneLogin(credentials);
       onLogin({
@@ -227,20 +216,6 @@ export default function LoginPage({ onLogin, initialError = null }) {
                   <span className="field__label">Name <span className="muted">(optional)</span></span>
                   <input id="customer-name" className="input" value={customerName} maxLength={100}
                          autoComplete="name" onChange={(event) => setCustomerName(event.target.value)} />
-                </label>
-                <label className="field" htmlFor="household-size">
-                  <span className="field__label">Household size</span>
-                  <input id="household-size" className="input" type="number" min="1" max="50"
-                         value={householdSize}
-                         onChange={(event) => setHouseholdSize(event.target.value)} />
-                </label>
-                <label className="field" htmlFor="preferred-weekday">
-                  <span className="field__label">Preferred delivery day</span>
-                  <select id="preferred-weekday" className="input" value={preferredWeekday} required
-                          onChange={(event) => setPreferredWeekday(event.target.value)}>
-                    <option value="" disabled>Choose a day</option>
-                    {WEEKDAYS.map((day) => <option key={day} value={day}>{day}</option>)}
-                  </select>
                 </label>
               </>
             )}

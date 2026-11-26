@@ -73,7 +73,7 @@ class PhoneAuthRequest(BaseModel):
 class RegistrationRequest(PhoneAuthRequest):
     customer_name: str | None = Field(None, max_length=100)
     household_size: int = Field(default=1, ge=1, le=50)
-    preferred_weekday: Literal["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    preferred_weekday: Literal["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] | None = None
 
 
 class AuthResponse(BaseModel):

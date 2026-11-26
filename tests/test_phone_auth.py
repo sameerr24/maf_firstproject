@@ -161,6 +161,23 @@ def test_registration_retry_does_not_create_a_duplicate(auth_store):
         )) == 1
 
 
+def test_registration_defaults_household_size_and_delivery_day(auth_store):
+    client, _ = build_client(auth_store)
+    payload = registration_payload()
+    payload.pop("household_size")
+    payload.pop("preferred_weekday")
+    response = client.post("/api/v1/auth/register", json=payload)
+
+    assert response.status_code == 201
+    with Session(auth_store.engine) as session:
+        customer = session.get(Customer, response.json()["customer_id"])
+        today = dt.datetime.now(dt.timezone.utc).astimezone(
+            dt.timezone(dt.timedelta(hours=5, minutes=30))
+        )
+        assert customer.household_size == 1
+        assert customer.preferred_weekday == ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")[today.weekday()]
+
+
 def test_existing_customer_can_log_in_by_verified_phone(auth_store):
     client, _ = build_client(auth_store)
     response = client.post("/api/v1/auth/login", json=login_payload())

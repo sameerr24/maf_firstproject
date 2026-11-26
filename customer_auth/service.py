@@ -71,16 +71,18 @@ class CustomerAuthService:
         region: str,
         customer_name: str | None,
         household_size: int,
-        preferred_weekday: str,
+        preferred_weekday: str | None,
         client_address: str,
     ) -> AuthSession:
         phone = self._verify_phone(msg91_access_token, phone_number, region, "register", client_address)
+        now = dt.datetime.now(INDIA_TIME)
+        weekdays = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
         customer_id, created = self.store.register_customer(
             phone_e164=phone,
             customer_name=customer_name.strip() if customer_name and customer_name.strip() else None,
             household_size=household_size,
-            preferred_weekday=preferred_weekday,
-            signup_date=dt.datetime.now(INDIA_TIME).date(),
+            preferred_weekday=preferred_weekday or weekdays[now.weekday()],
+            signup_date=now.date(),
         )
         return self._issue_session(customer_id, created=created)
 
