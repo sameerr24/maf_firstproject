@@ -1,8 +1,9 @@
 import { useState } from "react";
 
-// Catalogue images come from the dataset's image_url. BigBasket's CDN refuses requests
-// from other sites (HTTP 403), so when an image can't load we show an illustrated tile
-// chosen by the product's catalogue category instead of a broken image.
+// Catalogue images come from the dataset's image_url (BigBasket's CDN). A copy of each is kept
+// in public/products/<sku>.jpg (scripts/download_product_images.py), so the site doesn't depend
+// on the CDN, which ad blockers and some networks block. We try the local copy, then the CDN,
+// and if neither loads we show an illustrated tile chosen by the product's catalogue category.
 
 const ICONS = {
   dairy: <path d="M9 2.5h6v3l2 3V20a1.5 1.5 0 0 1-1.5 1.5h-7A1.5 1.5 0 0 1 7 20V8.5l2-3zM7 12.5h10" />,
@@ -33,9 +34,18 @@ function themeFor(category) {
   return hit ? { icon: hit[0], bg: hit[2], fg: hit[3] } : { icon: "other", bg: "#eef0f2", fg: "#4b5560" };
 }
 
+/** The local copy of a BigBasket image: ".../p/l/242671_1-nandini....jpg" -> "/products/242671.jpg".
+ *  Keyed by SKU, not file name, so it still works with an older image_url for the same product. */
+export function localImage(src) {
+  const sku = /\/(\d+)_[^/]*$/.exec(src ?? "")?.[1];
+  return sku ? `/products/${sku}.jpg` : null;
+}
+
 export default function ProductImage({ src, alt, category }) {
-  const [failed, setFailed] = useState(!src);
-  if (failed) {
+  const sources = [localImage(src), src].filter(Boolean);
+  const [failed, setFailed] = useState({ src, count: 0 });     // how many sources failed, for this src
+  const attempt = failed.src === src ? failed.count : 0;
+  if (attempt >= sources.length) {
     const t = themeFor(category);
     return (
       <div className="product-image product-image--fallback" role="img" aria-label={alt}
@@ -48,7 +58,8 @@ export default function ProductImage({ src, alt, category }) {
   }
   return (
     <div className="product-image">
-      <img src={src} alt={alt} loading="lazy" referrerPolicy="no-referrer" onError={() => setFailed(true)} />
+      <img src={sources[attempt]} alt={alt} loading="lazy" referrerPolicy="no-referrer"
+           onError={() => setFailed({ src, count: attempt + 1 })} />
     </div>
   );
 }
