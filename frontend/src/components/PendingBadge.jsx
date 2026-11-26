@@ -6,7 +6,7 @@ import { getApiAccessToken } from "../api/client.js";
 // link (subscriptions module). Polls on its own; the panel on the subscriptions page also
 // broadcasts its count (PENDING_EVENT) so both update together after a reply.
 
-const POLL_MS = 30000;
+const POLL_MS = 15000;
 export const PENDING_EVENT = "pending-deliveries-changed";
 
 export default function PendingBadge() {
@@ -24,10 +24,12 @@ export default function PendingBadge() {
     const timer = setInterval(load, POLL_MS);
     window.addEventListener(PENDING_EVENT, onCount);
     document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", load);                 // back from another app: re-check now
     return () => {
       clearInterval(timer);
       window.removeEventListener(PENDING_EVENT, onCount);
       document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", load);
     };
   }, []);
 
