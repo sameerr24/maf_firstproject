@@ -127,5 +127,10 @@ GET /api/products/:id · GET /api/subscriptions/draft?product_id=&rec_id= · GET
 - Whichever channel answers first wins; the other gets "no longer waiting for your reply" (409 `delivery_finalised`), so a delivery can't be ordered twice.
 - After a website reply, `app/notifications/chat_sync.py` removes the reminder's buttons in Telegram and posts the same confirmation the bot would send. This is best effort: a Telegram failure never fails the website action. Cancel, pause and "Skip next" on the dashboard clear an open reminder the same way.
 
+**Product photo in Telegram messages** (2026-11-26)
+- Reminder, out-of-stock and auto-skip messages are sent as the product's photo with the message text as its caption and the same buttons. The photo is the website's local copy (`frontend/public/products/<sku>.jpg`), uploaded once per process; later sends reuse Telegram's file_id.
+- No image file, a caption over 1024 characters, or a failed photo send: the plain text message goes out instead, so a reminder is never lost over a picture. A blocked bot is not retried.
+- WhatsApp (product) would do the same with an image header on the template.
+
 ## Still open
 - Nothing blocking. Demo prep: rotate the bot token, pick the demo customer, reset test data.
