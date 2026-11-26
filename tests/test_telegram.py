@@ -33,6 +33,14 @@ class FakeTelegram:
         self.calls.append(("send", chat_id, text, reply_markup))
         return {"message_id": next(self._ids)}
 
+    def send_photo(self, chat_id, photo, caption, reply_markup=None):
+        """Recorded like a text message (caption as the text), plus a ("photo", ...) call."""
+        if chat_id in self.blocked:
+            raise TelegramBlocked(403, "Forbidden: bot was blocked by the user")
+        self.calls.append(("photo", chat_id, photo))
+        self.calls.append(("send", chat_id, caption, reply_markup))
+        return {"message_id": next(self._ids), "photo": [{"file_id": "small"}, {"file_id": f"file-{photo.stem}"}]}
+
     def answer_callback_query(self, callback_query_id, text=None):
         self.calls.append(("answer", callback_query_id))
 

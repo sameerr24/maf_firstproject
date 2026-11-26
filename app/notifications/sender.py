@@ -18,6 +18,7 @@ from __future__ import annotations
 import html
 import logging
 import os
+from pathlib import Path
 from typing import Any, Protocol
 
 from sqlalchemy.orm import Session
@@ -135,9 +136,43 @@ class LoggingSender:
             "reason": "no_messaging_client_configured"})
 
 
+# Product photos for Telegram messages: the same files the website serves
+# (scripts/download_product_images.py). After the first upload Telegram returns a file_id,
+# which we reuse so each image is uploaded once per process.
+PRODUCT_IMAGES = Path(__file__).resolve().parents[2] / "frontend" / "public" / "products"
+CAPTION_LIMIT = 1024            # Telegram's limit for a photo caption; longer texts go without photo
+_photo_ids: dict[str, str] = {}
+
+
+def product_photo(occurrence) -> Path | None:
+    """The local image of the occurrence's product, if there is one."""
+    if occurrence is None:
+        return None
+    path = PRODUCT_IMAGES / f"{occurrence.subscription.product.sku_id}.jpg"
+    return path if path.is_file() else None
+
+
 class TelegramSender:
     def __init__(self, client):
         self.client = client
+
+    def _send(self, chat_id: int, text: str, markup: dict | None, photo: Path | None) -> dict:
+        """With the product photo (text as its caption) when there is one, else a text message.
+        If the photo fails for any reason other than a blocked bot, send the text instead."""
+        from app.notifications.telegram_api import TelegramBlocked
+
+        if photo is not None and len(text) <= CAPTION_LIMIT:
+            key = photo.stem
+            try:
+                sent = self.client.send_photo(chat_id, _photo_ids.get(key, photo), text, markup)
+                _photo_ids[key] = sent["photo"][-1]["file_id"]
+                return sent
+            except TelegramBlocked:
+                raise
+            except Exception:
+                _photo_ids.pop(key, None)            # e.g. a file_id Telegram no longer accepts
+                log.warning("Telegram photo failed for chat %s; sending text only", chat_id, exc_info=True)
+        return self.client.send_message(chat_id, text, markup)
 
     def send_template(self, session, *, customer, template, params, occurrence=None, buttons=None):
         from app.notifications.telegram_api import TelegramBlocked
@@ -147,8 +182,9 @@ class TelegramSender:
             log.debug("Not messaging %s (%s): not reachable", customer.customer_id, template)
             return None
         link = telegram_link(session, customer.customer_id)
+        photo = product_photo(occurrence)
         try:
-            sent = self.client.send_message(link.chat_id, render_text(template, params), inline_keyboard(buttons or []))
+            sent = self._send(link.chat_id, render_text(template, params), inline_keyboard(buttons or []), photo)
         except TelegramBlocked:
             log.warning("Customer %s blocked the bot; unlinking their chat", customer.customer_id)
             session.delete(link)
@@ -156,7 +192,7 @@ class TelegramSender:
         log.info("[telegram] %s -> chat %s (%s)", template, link.chat_id, customer.customer_id)
         return _log_row(session, customer, occurrence, {
             "channel": "telegram", "template": template, "chat_id": link.chat_id, "params": params,
-            "body_parameters": body, "buttons": buttons or [], "status": "sent"},
+            "body_parameters": body, "buttons": buttons or [], "photo": "photo" in sent, "status": "sent"},
             message_id=f"tg:{link.chat_id}:{sent['message_id']}")
 
 
