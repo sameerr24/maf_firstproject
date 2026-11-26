@@ -81,6 +81,7 @@ class AuthResponse(BaseModel):
     token_type: str = "bearer"
     expires_in: int = Field(description="Seconds until the token expires")
     customer_id: str
+    customer_name: str | None = None
     created: bool = False
 
 

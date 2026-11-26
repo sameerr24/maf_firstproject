@@ -118,6 +118,7 @@ def test_registration_and_login_use_only_the_verified_phone(auth_store):
     assert result.status_code == 201
     body = result.json()
     assert body["created"] is True and body["customer_id"].startswith("CUST-")
+    assert body["customer_name"] == "Test Customer"
     assert len(body["customer_id"]) <= 20
     assert TokenService(AUTH_SETTINGS).verify(body["access_token"]) == body["customer_id"]
     assert result.headers["set-cookie"].lower().find("httponly") >= 0
@@ -140,6 +141,7 @@ def test_registration_and_login_use_only_the_verified_phone(auth_store):
         phone_number="9800000003",
     ))
     assert login.status_code == 200 and login.json()["customer_id"] == body["customer_id"]
+    assert login.json()["customer_name"] == "Test Customer"
     assert client.get("/api/v1/auth/me", headers={
         "Authorization": f"Bearer {login.json()['access_token']}",
     }).json() == {"customer_id": body["customer_id"]}
@@ -223,6 +225,7 @@ def test_refresh_endpoint_rotates_cookie_and_logout_revokes(auth_store):
     rotated = client.post("/api/v1/auth/refresh", headers={"Origin": FRONTEND_ORIGIN})
     assert rotated.status_code == 200
     assert rotated.json()["access_token"] != registered.json()["access_token"]
+    assert rotated.json()["customer_name"] == "Test Customer"
     new_refresh = client.cookies.get("smart_reorder_refresh")
     assert new_refresh and new_refresh != old_refresh
 

@@ -91,7 +91,7 @@ export default function App() {
 
   return (
     <div className="page">
-      <Header customerId={session.customerId} onSwitchCustomer={handleLogout} currentPage={route.page} />
+      <Header customerName={session.customerName} onSwitchCustomer={handleLogout} currentPage={route.page} />
       {logoutError && <p className="form-error logout-error" role="alert">{logoutError}</p>}
       {route.page === "orders" ? (
         <OrderHistoryPage session={session} onSessionExpired={clearExpiredSession}

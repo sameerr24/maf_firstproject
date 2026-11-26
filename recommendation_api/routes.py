@@ -69,6 +69,7 @@ def _auth_response(session, response: Response, service: CustomerAuthService) ->
         access_token=session.access_token,
         expires_in=service.settings.access_token_ttl_seconds,
         customer_id=session.customer_id,
+        customer_name=service.store.find_customer_name(session.customer_id),
         created=session.created,
     )
 

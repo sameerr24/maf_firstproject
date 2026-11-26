@@ -51,7 +51,11 @@ export async function refreshAccessToken() {
       }
       currentAccessToken = data.access_token;
       window.dispatchEvent(new CustomEvent("auth:session-refreshed", {
-        detail: { token: data.access_token, customerId: data.customer_id },
+        detail: {
+          token: data.access_token,
+          customerId: data.customer_id,
+          customerName: data.customer_name,
+        },
       }));
       return data.access_token;
     })().finally(() => {

@@ -162,7 +162,11 @@ export default function LoginPage({ onLogin, initialError = null }) {
           preferred_weekday: preferredWeekday,
         })
         : await phoneLogin(credentials);
-      onLogin({ token: result.access_token, customerId: result.customer_id });
+      onLogin({
+        token: result.access_token,
+        customerId: result.customer_id,
+        customerName: result.customer_name,
+      });
     } catch (verifyError) {
       if (verifyError.code === "phone_not_registered") {
         setError("No account is linked to this number yet. Choose “Create account” to register.");

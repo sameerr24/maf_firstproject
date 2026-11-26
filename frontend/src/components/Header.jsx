@@ -1,7 +1,9 @@
 import Brand from "./Brand.jsx";
 import PendingBadge from "./PendingBadge.jsx";
 
-export default function Header({ customerId, onSwitchCustomer, currentPage }) {
+export default function Header({ customerName, onSwitchCustomer, currentPage }) {
+  const displayName = customerName?.trim() || "Your account";
+
   return (
     <header className="header">
       <div className="header__inner">
@@ -17,7 +19,7 @@ export default function Header({ customerId, onSwitchCustomer, currentPage }) {
           </span>
           <span className="header__who">
             <small>Signed in as</small>
-            <strong>{customerId}</strong>
+            <strong>{displayName}</strong>
           </span>
           <button type="button" className="btn btn--ghost btn--sm" onClick={onSwitchCustomer}>Switch customer</button>
         </div>

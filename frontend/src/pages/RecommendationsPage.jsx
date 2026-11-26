@@ -7,7 +7,8 @@ import { formatDate, plural } from "../format.js";
 const LIMIT = 10;
 
 export default function RecommendationsPage({ session, onSubscribe, onSessionExpired }) {
-  const { token, customerId } = session;
+  const { token, customerName } = session;
+  const displayName = customerName?.trim() || "you";
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
 
@@ -27,7 +28,7 @@ export default function RecommendationsPage({ session, onSubscribe, onSessionExp
     <main className="main main--recs">
       <section className="hero hero--compact">
         <div>
-          <p className="eyebrow">Recommended for {customerId}</p>
+          <p className="eyebrow">Recommended for {displayName}</p>
           <h1>Your top {data && recs.length > 0 ? recs.length : LIMIT} reorder picks</h1>
           <p className="lede">Ranked from your purchase history: what you'll need first comes first.</p>
         </div>
@@ -51,7 +52,7 @@ export default function RecommendationsPage({ session, onSubscribe, onSessionExp
 
         {data && recs.length === 0 && (
           <EmptyState title="No recommendations yet">
-            We recommend products from your own purchase history, and there isn't any yet for {customerId}.
+            We recommend products from your own purchase history, and there isn't any yet for {displayName}.
             After a few orders, the essentials you buy regularly will appear here.
           </EmptyState>
         )}

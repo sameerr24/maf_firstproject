@@ -74,6 +74,10 @@ class AuthStore:
         with Session(self.engine) as session:
             return session.scalar(select(Customer.customer_id).where(Customer.phone_e164 == phone_e164))
 
+    def find_customer_name(self, customer_id: str) -> str | None:
+        with Session(self.engine) as session:
+            return session.scalar(select(Customer.customer_name).where(Customer.customer_id == customer_id))
+
     def register_customer(
         self,
         *,
