@@ -11,7 +11,7 @@ import { formatDate, formatPrice, plural } from "../format.js";
 // slot), Skip or delay, Stop subscription. Answering here also clears the chat's buttons and
 // posts the confirmation there; answering in chat makes the reminder disappear here.
 
-const POLL_MS = 15000;
+const POLL_MS = 5000;
 
 /** "9:00 PM, 27 Nov" in IST from an ISO timestamp with offset. */
 function formatReplyBy(iso) {
@@ -40,16 +40,20 @@ export default function PendingDeliveries({ token, onChanged, onFail }) {
     }),
     [token, onFail]);
 
-  // Poll, and re-check when the tab regains focus, so a reminder sent by the scheduler (or
-  // answered in chat) shows up here without a reload.
+  // Poll, and re-check as soon as the window gets focus or the tab becomes visible, so a
+  // reminder sent by the scheduler (or answered in chat) shows up here without a reload.
+  // Focus matters: switching back from another app (terminal, Telegram) doesn't change the
+  // tab's visibility, and browsers slow timers down to ~1/min for windows that are covered.
   useEffect(() => {
     load();
     const timer = setInterval(load, POLL_MS);
     const onVisible = () => document.visibilityState === "visible" && load();
     document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", load);
     return () => {
       clearInterval(timer);
       document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", load);
     };
   }, [load]);
 
