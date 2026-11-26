@@ -274,3 +274,21 @@ def test_validation_ignores_app_columns_and_subscription_orders(loaded, sources)
                      {"p": pid, "pt": ptype, "u": price, "t": price * 2})
     checks = vdb.run_checks(loaded, sources)
     assert [c for c in checks if c.status == vdb.FAIL] == []
+
+
+def test_subscription_orders_do_not_trigger_csv_warnings(loaded, sources):
+    """Subscription orders (source='subscription') are app data: a different price or a
+    product outside the customer's synthetic profile must not raise CSV-consistency warnings."""
+    with loaded.begin() as conn:
+        pid, ptype, price = conn.execute(text(
+            "SELECT product_id, product_type, discount_price + 1 FROM products p WHERE NOT EXISTS "
+            "(SELECT 1 FROM customer_product_profiles f WHERE f.customer_id = 'CUST-0001' "
+            "AND f.product_id = p.product_id) ORDER BY product_id LIMIT 1")).one()
+        conn.execute(text("INSERT INTO orders (order_id, customer_id, order_date, order_datetime, item_count, "
+                          "unit_count, order_total, source) VALUES ('SUB-1', 'CUST-0001', '2026-11-20', "
+                          "'2026-11-20 09:00', 1, 2, :total, 'subscription')"), {"total": price * 2})
+        conn.execute(text("INSERT INTO order_items VALUES ('SUBI-1', 'SUB-1', :pid, :ptype, 2, :price, :total)"),
+                     {"pid": pid, "ptype": ptype, "price": price, "total": price * 2})
+    checks = vdb.run_checks(loaded, sources)
+    problems = [c for c in checks if c.status != vdb.PASS]
+    assert not problems, problems

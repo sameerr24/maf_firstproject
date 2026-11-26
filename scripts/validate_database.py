@@ -174,18 +174,24 @@ def run_checks(engine: Engine, sources: dict[str, SourceTable] | None) -> list[C
             checks.append(_count_check(conn, "values", name, sql, bad_detail="{n:,} rows"))
 
         # 6. Consistency warnings (plausible in real data, unexpected here) ----
+        # The last three compare against the synthetic CSV history (catalogue prices, generator
+        # profiles), so they only look at source='manual' orders. Subscription orders are app
+        # data: priced when the customer approves them, and possibly for products outside the
+        # customer's synthetic profile.
         warn_sql = {
             "orders dated before customer signup":
                 "SELECT count(*) FROM orders o JOIN customers c USING (customer_id) WHERE o.order_date < c.signup_date",
             "order_items.unit_price differs from catalogue discount_price":
-                "SELECT count(*) FROM order_items i JOIN products p USING (product_id) WHERE i.unit_price <> p.discount_price",
+                "SELECT count(*) FROM order_items i JOIN orders o USING (order_id) JOIN products p USING (product_id) "
+                "WHERE o.source = 'manual' AND i.unit_price <> p.discount_price",
             "purchased (customer, product) pairs without a profile":
-                "SELECT count(*) FROM (SELECT DISTINCT o.customer_id, i.product_id FROM order_items i JOIN orders o USING (order_id)) x "
+                "SELECT count(*) FROM (SELECT DISTINCT o.customer_id, i.product_id FROM order_items i JOIN orders o USING (order_id) "
+                "WHERE o.source = 'manual') x "
                 "LEFT JOIN customer_product_profiles f USING (customer_id, product_id) WHERE f.customer_id IS NULL",
             "profiles.purchase_occasions differs from actual order_items":
                 "SELECT count(*) FROM customer_product_profiles f LEFT JOIN (SELECT o.customer_id, i.product_id, count(*) n "
-                "FROM order_items i JOIN orders o USING (order_id) GROUP BY 1, 2) a USING (customer_id, product_id) "
-                "WHERE f.purchase_occasions <> coalesce(a.n, 0)",
+                "FROM order_items i JOIN orders o USING (order_id) WHERE o.source = 'manual' GROUP BY 1, 2) a "
+                "USING (customer_id, product_id) WHERE f.purchase_occasions <> coalesce(a.n, 0)",
         }
         for name, sql in warn_sql.items():
             checks.append(_count_check(conn, "consistency", name, sql, fail_status=WARN, bad_detail="{n:,} rows"))
