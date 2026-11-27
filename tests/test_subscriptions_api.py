@@ -5,7 +5,7 @@ Runs the real app against a throwaway schema on the local test database.
 import pytest
 
 from app import create_app
-from subscription_db import ME, MILK, NOWA, OTHER, TV, bearer, test_env, admin_engine, schema_engine  # noqa: F401
+from subscription_db import ME, MILK, NOWA, OTHER, SOAP, TV, bearer, test_env, admin_engine, schema_engine  # noqa: F401
 
 
 @pytest.fixture
@@ -142,6 +142,24 @@ def test_patch_pause_resume_skip_cancel_persist(client, auth):
     assert r.status_code == 200 and r.json["subscription"]["status"] == "CANCELLED"
     assert client.get("/api/subscriptions", headers=auth()).json["subscriptions"] == []
     assert len(client.get("/api/subscriptions?include_cancelled=1", headers=auth()).json["subscriptions"]) == 1
+
+
+def test_list_keeps_only_latest_cancelled_subscription_per_customer(client, auth):
+    first = create(client, auth, product_id=MILK).json["subscription"]
+    assert client.delete(f"/api/subscriptions/{first['subscription_id']}", headers=auth()).status_code == 200
+
+    second = create(client, auth, product_id=SOAP).json["subscription"]
+    assert client.delete(f"/api/subscriptions/{second['subscription_id']}", headers=auth()).status_code == 200
+
+    other = create(client, auth, customer=OTHER, product_id=MILK).json["subscription"]
+    assert client.delete(f"/api/subscriptions/{other['subscription_id']}", headers=auth(OTHER)).status_code == 200
+
+    mine = client.get("/api/subscriptions?include_cancelled=1", headers=auth()).json["subscriptions"]
+    theirs = client.get("/api/subscriptions?include_cancelled=1", headers=auth(OTHER)).json["subscriptions"]
+
+    assert [sub["subscription_id"] for sub in mine] == [second["subscription_id"]]
+    assert [sub["subscription_id"] for sub in theirs] == [other["subscription_id"]]
+    assert client.get(f"/api/subscriptions/{first['subscription_id']}", headers=auth()).status_code == 200
 
 
 def test_failed_patch_changes_nothing(client, auth):

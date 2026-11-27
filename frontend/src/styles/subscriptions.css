@@ -18,6 +18,9 @@
 .sub-new h1 { font-size: 1.5rem; }
 .sub-new--loading { min-height: 320px; }
 .sub-new--done { gap: .6rem; }
+.autopay-management { grid-template-columns: 1fr auto; align-items: center; }
+.autopay-management h2 { font-size: 1.2rem; }
+.autopay-management > .sub-ok, .autopay-management > .form-error { grid-column: 1 / -1; }
 .sub-new__product { display: grid; grid-template-columns: 140px 1fr; gap: 1.25rem; align-items: center; }
 .sub-new__product .product-image { aspect-ratio: 1 / 1; }
 .sub-new__product .product-image__cat { display: none; }

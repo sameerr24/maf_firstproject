@@ -68,10 +68,38 @@ RLS is enabled with no policies. Flask connects with the postgres connection str
 ## API endpoints (Shubham)
 GET /api/products/:id · GET /api/subscriptions/draft?product_id=&rec_id= · GET/POST /api/subscriptions · PATCH/DELETE /api/subscriptions/:id · POST /api/subscriptions/:id/skip · GET /api/subscriptions/deliveries/pending · POST /api/subscriptions/deliveries/:occurrence_id/{approve,skip,delay} · GET /api/orders · GET/POST /webhooks/whatsapp · POST /api/dev/run-scheduler
 
+`GET /api/subscriptions?include_cancelled=1` returns live subscriptions and at most the
+most recently cancelled subscription for the authenticated customer. Older cancelled
+records remain stored for historical integrity but are not included in this list.
+
+## Razorpay Autopay sandbox
+
+The Razorpay integration branch currently supports test-mode UPI mandate enrollment only.
+Set `RAZORPAY_KEY_ID` to a Razorpay `rzp_test_...` key and `RAZORPAY_KEY_SECRET` in the
+ignored `.env`; live keys are rejected. The enrollment flow uses a simulated ₹1
+authorization payment, a ₹5,000 maximum per delivery, and the flexible `as_presented`
+mandate frequency. A confirmed mandate is shared by the customer's subscriptions.
+
+This enrollment does not charge for deliveries or enable unattended charges. Delivery
+charges are not implemented here; customer approval must remain required before any
+future charge is initiated. Apply `migrations/sql/004_customer_autopay_mandates.sql`
+before using the endpoints:
+
+- `GET /api/payments/autopay`
+- `POST /api/payments/autopay/setup`
+- `POST /api/payments/autopay/setup/complete`
+- `POST /api/payments/autopay/disable` (requests Razorpay token cancellation; bank confirmation can be asynchronous)
+
+The subscription page uses an existing active mandate rather than offering the "set up later"
+choice. The disable control requests cancellation of the Razorpay token; a `cancellation_initiated`
+response means Razorpay and the bank have not yet confirmed final closure. Test-mode users can
+start a fresh authorization from the Autopay panel after cancellation has been requested.
+
 ## Decisions (agreed with Sameer, 2026-11-24)
 
 **Pricing**
 - `products.price` is the regular (non-subscriber) price, and `discount_price` is the subscriber price.
+- Recommendation cards identify the discounted subscriber price as subscription-only.
 - Subscriptions charge `discount_price`, stored as `unit_price_at_subscription`.
 - The PDP shows `price` struck through, plus the saving per unit and per delivery.
 
@@ -91,7 +119,8 @@ GET /api/products/:id · GET /api/subscriptions/draft?product_id=&rec_id= · GET
 **Subscription orders** (written on Approve)
 - `order_id = SUB-<occurrence_id>`, `order_item_id = SUBI-<occurrence_id>` (IDs are at most 20 characters).
 - `order_datetime` is **naive Asia/Kolkata time**, and `order_date = order_datetime.date()`. The column has no time zone and a CHECK requires them to match, so UTC would break orders between 00:00 and 05:30 IST.
-- `source='subscription'`, `item_count=1`, `unit_count=quantity`, `unit_price=unit_price_at_subscription` (or the accepted new price), `line_total = quantity * unit_price` exactly, `order_total = line_total`.
+- `source='subscription'`, `item_count=1`, `unit_count=quantity`, `unit_price=unit_price_at_subscription` (or the accepted new price), `line_total = quantity * unit_price` exactly, and `order_total = line_total + subscription_fee`.
+- A one-time ₹1 fee is recorded in the first approved order while the customer has an active subscription period. It is not collected as a payment in this demo. Existing active subscriptions are treated as already covered; pausing or cancelling the last active subscription resets the fee for a later active period. Apply `migrations/sql/005_subscription_fee.sql` before deploying this behavior.
 
 **Recommendations** (Sameer)
 - He learns only from `source='manual'` orders, so subscriptions don't feed back into their own cadence.
@@ -109,7 +138,7 @@ GET /api/products/:id · GET /api/subscriptions/draft?product_id=&rec_id= · GET
 - A bot can only message chats that started it, by chat ID. The customer taps Start, then "Share my phone number". The shared number must be their own and must match `customers.phone_e164`. The chat is stored in `telegram_links` (migration `migrations/sql/002_telegram_links.sql`; no existing table changed).
 - Existing names stay: `whatsapp_opt_in` means "may be messaged" and `whatsapp_messages` logs Telegram messages too (`wa_message_id` = `tg:<chat>:<message>` outbound, `tg-update:<update_id>` inbound, for dedupe).
 - Run the bot with `flask --app run telegram-poll` (long polling, so no public URL or ngrok). Reminders go through Telegram whenever `TELEGRAM_BOT_TOKEN` is set.
-- Approve: slot picker, then one transaction: lock and decrement stock, create the order, set `ORDER_PLACED`. Approving accepts the current subscriber price.
+- Approve: slot picker, then one transaction: lock and decrement stock, create the order, set `ORDER_PLACED`. The confirmed slot is saved on the occurrence, order, and subscription's `preferred_slot`. Approving accepts the current subscriber price.
 
 **Delay = approve again** (Shubham, 2026-11-24; the problem statement requires every charge to be approved)
 - "Delay N days" (N = 1 or 2) moves only this delivery. The occurrence keeps its cycle date (`scheduled_date`), gets `delay_days`, and becomes `DELAYED`. The delivery date is `scheduled_date + delay_days`.

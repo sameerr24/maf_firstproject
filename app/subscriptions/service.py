@@ -15,7 +15,7 @@ import datetime as dt
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
@@ -139,8 +139,14 @@ def _get_product(session: Session, product_id: Any) -> Product:
     return product
 
 
-def _get_customer(session: Session, customer_id: str) -> Customer:
-    customer = session.get(Customer, customer_id)
+def _get_customer(session: Session, customer_id: str, *, lock: bool = False) -> Customer:
+    if lock:
+        customer = session.scalars(
+            select(Customer).where(Customer.customer_id == customer_id)
+            .with_for_update().execution_options(populate_existing=True)
+        ).one_or_none()
+    else:
+        customer = session.get(Customer, customer_id)
     if customer is None:
         raise NotFound("Customer not found")
     return customer
@@ -157,7 +163,7 @@ def _get_owned(session: Session, customer_id: str, subscription_id: int, *, lock
     return sub
 
 
-def _require_messaging(session: Session, customer: Customer) -> None:
+def require_messaging(session: Session, customer: Customer) -> None:
     if not can_message(session, customer):
         raise Conflict("Connect chat notifications to subscribe: delivery reminders and approvals happen there.",
                        code="messaging_required")
@@ -275,6 +281,9 @@ def subscription_draft(session: Session, customer_id: str, product_id: str, rec_
         "unit_price": _money(p.discount_price),
         "total_per_delivery": _money(p.discount_price * quantity),
         "saving_per_delivery": _money((p.price - p.discount_price) * quantity),
+        "subscription_fee_due": not customer.subscription_fee_recorded,
+        "subscription_fee_amount": _money(
+            C.SUBSCRIPTION_FEE_AMOUNT if not customer.subscription_fee_recorded else Decimal(0)),
         "recommendation": {
             "source": "recommendation" if rec else "default",
             "quantity": rec.quantity if rec else None,
@@ -298,10 +307,23 @@ def subscription_draft(session: Session, customer_id: str, product_id: str, rec_
 
 
 def list_subscriptions(session: Session, customer_id: str, include_cancelled: bool = False) -> list[dict[str, Any]]:
-    """Active first, then paused, then cancelled; soonest delivery first within each group."""
+    """List live subscriptions and, optionally, the most recently cancelled one."""
     q = (select(Subscription).where(Subscription.customer_id == customer_id)
          .options(selectinload(Subscription.product)))
-    if not include_cancelled:
+    if include_cancelled:
+        latest_cancelled_id = (select(Subscription.subscription_id)
+                               .where(Subscription.customer_id == customer_id,
+                                      Subscription.status == "CANCELLED")
+                               .order_by(func.coalesce(
+                                   Subscription.cancelled_at,
+                                   Subscription.updated_at,
+                                   Subscription.created_at,
+                               ).desc(), Subscription.subscription_id.desc())
+                               .limit(1)
+                               .scalar_subquery())
+        q = q.where(or_(Subscription.status != "CANCELLED",
+                        Subscription.subscription_id == latest_cancelled_id))
+    else:
         q = q.where(Subscription.status != "CANCELLED")
     subs = session.scalars(q).all()
     subs = sorted(subs, key=lambda s: (STATUS_ORDER[s.status], s.next_delivery_date or dt.date.max,
@@ -323,6 +345,7 @@ def pending_deliveries(session: Session, customer_id: str, now: dt.datetime | No
     for occ in sorted(rows, key=lambda o: (delivery_date(o), o.occurrence_id)):
         sub, p = occ.subscription, occ.subscription.product
         price, was = p.discount_price, sub.unit_price_at_subscription
+        fee = C.SUBSCRIPTION_FEE_AMOUNT if not sub.customer.subscription_fee_recorded else Decimal(0)
         out.append({
             "occurrence_id": occ.occurrence_id,
             "subscription_id": sub.subscription_id,
@@ -331,7 +354,8 @@ def pending_deliveries(session: Session, customer_id: str, now: dt.datetime | No
             "delivery_date": delivery_date(occ).isoformat(),
             "delayed_days": occ.delay_days or 0,
             "unit_price": _money(price),                 # approving accepts today's subscriber price
-            "total": _money(price * sub.quantity),
+            "total": _money(price * sub.quantity + fee),
+            "subscription_fee": _money(fee),
             "saving": _money(max(p.price - price, Decimal(0)) * sub.quantity),
             "price_changed": price != was,
             "previous_total": _money(was * sub.quantity),
@@ -362,8 +386,8 @@ def create_subscription(session: Session, customer_id: str, data: dict,
     p = _get_product(session, data.get("product_id"))
     if not p.replenishable:
         raise ValidationError("This product isn't available on subscription", code="not_subscribable")
-    customer = _get_customer(session, customer_id)
-    _require_messaging(session, customer)
+    customer = _get_customer(session, customer_id, lock=True)
+    require_messaging(session, customer)
     rec = get_recommendation(session, customer_id, p.product_id, data.get("rec_id"))
 
     quantity = _int_in("quantity", data.get("quantity", rec.quantity if rec else C.DEFAULT_QUANTITY),
@@ -455,13 +479,14 @@ def update_subscription(session: Session, customer_id: str, subscription_id: int
         if "paused_until" in data:
             raise ValidationError("paused_until can't be set when resuming", details={"field": "paused_until"})
         if sub.status == "PAUSED":
-            _require_messaging(session, sub.customer)
+            require_messaging(session, sub.customer)
             resume(session, sub, today)
     elif "paused_until" in data:
         raise ValidationError("paused_until can only be set together with status=PAUSED",
                               details={"field": "paused_until"})
 
     session.flush()
+    _reset_subscription_fee_if_no_active(session, customer_id)
     session.refresh(sub)
     return subscription_to_dict(sub)
 
@@ -485,8 +510,17 @@ def cancel_subscription(session: Session, customer_id: str, subscription_id: int
         sub.next_delivery_date = None
         sub.paused_until = None
         session.flush()
-        session.refresh(sub)
+    _reset_subscription_fee_if_no_active(session, customer_id)
+    session.refresh(sub)
     return subscription_to_dict(sub)
+
+
+def _reset_subscription_fee_if_no_active(session: Session, customer_id: str) -> None:
+    customer = _get_customer(session, customer_id, lock=True)
+    has_active = session.scalar(select(Subscription.subscription_id).where(
+        Subscription.customer_id == customer_id, Subscription.status == "ACTIVE").limit(1))
+    if has_active is None:
+        customer.subscription_fee_recorded = False
 
 
 def get_owned_delivery(session: Session, customer_id: str, occurrence_id: int, *,
@@ -537,6 +571,7 @@ def approve_delivery(session: Session, customer_id: str, occurrence_id: int, slo
     sub, occ = get_owned_delivery(session, customer_id, occurrence_id, lock=True)
     ensure_awaiting_reply(sub, occ, now)
     product, qty, when = sub.product, sub.quantity, delivery_date(occ)
+    customer = _get_customer(session, customer_id, lock=True)
 
     stock = session.scalars(select(Inventory).where(Inventory.product_id == sub.product_id)
                             .with_for_update()).one_or_none()
@@ -548,24 +583,31 @@ def approve_delivery(session: Session, customer_id: str, occurrence_id: int, slo
                 "next_delivery_date": _iso(sub.next_delivery_date)}
 
     price = product.discount_price
-    total = price * qty
+    product_total = price * qty
+    subscription_fee = C.SUBSCRIPTION_FEE_AMOUNT if not customer.subscription_fee_recorded else Decimal(0)
+    total = product_total + subscription_fee
     stock.available_qty -= qty
     placed_at = now.astimezone(LOCAL_TZ).replace(tzinfo=None)    # orders.order_datetime is naive IST
     order_id = f"SUB-{occ.occurrence_id}"
     session.add(Order(order_id=order_id, customer_id=customer_id, order_date=placed_at.date(),
                       order_datetime=placed_at, item_count=1, unit_count=qty, order_total=total,
+                      subscription_fee=subscription_fee,
                       source="subscription", delivery_slot=slot))
     session.flush()
     session.add(OrderItem(order_item_id=f"SUBI-{occ.occurrence_id}", order_id=order_id,
                           product_id=product.product_id, product_type=product.product_type,
-                          quantity=qty, unit_price=price, line_total=total))
+                          quantity=qty, unit_price=price, line_total=product_total))
     occ.status, occ.order_id, occ.delivery_slot = "ORDER_PLACED", order_id, slot
     occ.unit_price_at_order, occ.responded_at = price, now
     sub.unit_price_at_subscription = price             # the accepted price is the new reference
+    sub.preferred_slot = slot
+    if subscription_fee > 0:
+        customer.subscription_fee_recorded = True
     advance_cycle(session, sub, occ, today)
     session.flush()
     return {"status": "order_placed", "order_id": order_id, "product": product.product_name,
             "quantity": qty, "delivery_date": when.isoformat(), "slot": slot, "total": _money(total),
+            "product_total": _money(product_total), "subscription_fee": _money(subscription_fee),
             "next_delivery_date": _iso(sub.next_delivery_date)}
 
 

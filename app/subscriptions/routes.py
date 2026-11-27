@@ -16,8 +16,8 @@ from sqlalchemy import select
 
 from app.auth import login_required
 from app.db import db_session
-from app.errors import ValidationError
-from app.models import DeliveryOccurrence, Subscription
+from app.errors import Conflict, ValidationError
+from app.models import CustomerAutopayMandate, DeliveryOccurrence, Subscription
 from app.notifications import chat_sync
 from app.notifications import telegram_bot as bot
 from app.subscriptions import bp, service
@@ -67,7 +67,21 @@ def draft():
 @bp.post("")
 @login_required
 def create_subscription():
-    sub = service.create_subscription(db_session, g.customer_id, _json_body())
+    data = _json_body()
+    autopay_mode = data.pop("autopay_mode", "later")
+    if not isinstance(autopay_mode, str) or autopay_mode not in {"later", "existing"}:
+        raise ValidationError("autopay_mode must be 'later' or 'existing'",
+                              details={"field": "autopay_mode"})
+    mandate = db_session.get(CustomerAutopayMandate, g.customer_id)
+    has_active_autopay = mandate is not None and mandate.status == "ACTIVE"
+    if autopay_mode == "later" and has_active_autopay:
+        raise Conflict("Autopay is already set up. Subscribe using the existing mandate.",
+                       code="autopay_already_configured")
+    if autopay_mode == "existing" and not has_active_autopay:
+        raise Conflict("Set up Autopay before subscribing with it.",
+                       code="autopay_not_configured")
+
+    sub = service.create_subscription(db_session, g.customer_id, data)
     db_session.commit()
     location = url_for("subscriptions.get_subscription", subscription_id=sub["subscription_id"])
     return jsonify(subscription=sub), 201, {"Location": location}

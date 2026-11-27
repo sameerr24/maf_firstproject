@@ -46,6 +46,7 @@ def _order_to_dict(order: Order, subscription_id: int | None) -> dict[str, Any]:
         "item_count": order.item_count,
         "unit_count": order.unit_count,
         "order_total": _money(order.order_total),
+        "subscription_fee": _money(order.subscription_fee),
         "items": [_item_to_dict(i) for i in sorted(order.items, key=lambda i: i.order_item_id)],
     }
 

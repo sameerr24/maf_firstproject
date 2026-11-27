@@ -5,7 +5,8 @@ import pytest
 from sqlalchemy.orm import Session
 
 from app import create_app
-from app.models import DeliveryOccurrence
+from app.models import Customer, DeliveryOccurrence, Subscription
+from database.models import Order, OrderItem
 from app.notifications import chat_sync
 from app.notifications.telegram_bot import process_update
 from app.subscriptions import service as svc
@@ -59,9 +60,56 @@ def test_approve_on_website_places_order_and_updates_chat(engine, tg, client):
     r = client.post(f"/api/subscriptions/deliveries/{occ}/approve", json={"slot": "07:00-09:00"}, headers=bearer(ME))
     assert r.status_code == 200 and r.json["status"] == "order_placed" and r.json["order_id"] == f"SUB-{occ}"
     assert occ_state(engine, occ)[0] == "ORDER_PLACED"
+    with Session(engine) as session:
+        assert session.get(DeliveryOccurrence, occ).delivery_slot == "07:00-09:00"
+        assert session.get(Subscription, sid).preferred_slot == "07:00-09:00"
     assert ("remove_buttons", CHAT[ME], 100) in tg.calls           # the reminder (fake ids start at 100)
     assert "Order placed" in tg.last_text() and "Done on the website" in tg.last_text()
     assert pending(client) == []
+
+
+def test_one_time_fee_is_recorded_on_first_approved_order_only(engine, tg, client):
+    sid = subscribe(engine, quantity=2, fee_unrecorded=True)
+    occ = remind(engine, tg, sid)
+
+    response = client.post(
+        f"/api/subscriptions/deliveries/{occ}/approve",
+        json={"slot": "07:00-09:00"},
+        headers=bearer(ME),
+    )
+
+    assert response.status_code == 200
+    assert response.json["total"] == "55.00"
+    assert response.json["subscription_fee"] == "1.00"
+    orders = client.get("/api/orders", headers=bearer(ME)).json["orders"]
+    assert orders[0]["order_id"] == f"SUB-{occ}"
+    assert orders[0]["order_total"] == "55.00" and orders[0]["subscription_fee"] == "1.00"
+    with Session(engine) as session:
+        order = session.get(Order, f"SUB-{occ}")
+        item = session.get(OrderItem, f"SUBI-{occ}")
+        assert order.order_total == 55 and order.subscription_fee == 1
+        assert item.line_total == 54
+        assert session.get(Customer, ME).subscription_fee_recorded is True
+
+    next_occ = remind(engine, tg, sid, now=at(4, 9, month=12))
+    next_response = client.post(
+        f"/api/subscriptions/deliveries/{next_occ}/approve",
+        json={"slot": "07:00-09:00"},
+        headers=bearer(ME),
+    )
+    assert next_response.status_code == 200
+    assert next_response.json["total"] == "54.00"
+    assert next_response.json["subscription_fee"] == "0.00"
+
+
+def test_last_active_subscription_cancellation_resets_fee_for_next_active_period(engine, tg, client):
+    sid = subscribe(engine)
+    occ = remind(engine, tg, sid)
+    response = client.delete(f"/api/subscriptions/{sid}", headers=bearer(ME))
+    assert response.status_code == 200
+    with Session(engine) as session:
+        assert session.get(Customer, ME).subscription_fee_recorded is False
+    assert occ_state(engine, occ)[0] == "CANCELLED"
 
 
 def test_approve_needs_a_valid_slot(engine, tg, client):
@@ -101,6 +149,44 @@ def test_answered_in_chat_first_then_website_is_refused(engine, tg, client):
     process_update(engine, tg, tap(CHAT[ME], f"SKIPCONF:{occ}"), now=NOW)
     r = client.post(f"/api/subscriptions/deliveries/{occ}/approve", json={"slot": "07:00-09:00"}, headers=bearer(ME))
     assert r.status_code == 409 and r.json["error"]["code"] == "delivery_finalised"
+
+
+def test_telegram_delay_wins_over_web_approval(engine, tg, client):
+    sid = subscribe(engine)
+    occ = remind(engine, tg, sid)
+    process_update(engine, tg, tap(CHAT[ME], f"DELAY:{occ}:1"), now=NOW)
+
+    response = client.post(
+        f"/api/subscriptions/deliveries/{occ}/approve",
+        json={"slot": "07:00-09:00"},
+        headers=bearer(ME),
+    )
+
+    assert response.status_code == 409
+    assert response.json["error"]["code"] == "delivery_finalised"
+    assert occ_state(engine, occ)[0] == "DELAYED"
+
+
+def test_first_slot_choice_is_final_across_telegram_and_web(engine, tg, client):
+    sid = subscribe(engine, quantity=2)
+    occ = remind(engine, tg, sid)
+    process_update(engine, tg, tap(CHAT[ME], f"SLOT:{occ}:1"), now=NOW)
+
+    response = client.post(
+        f"/api/subscriptions/deliveries/{occ}/approve",
+        json={"slot": "18:00-21:00"},
+        headers=bearer(ME),
+    )
+
+    assert response.status_code == 409
+    assert response.json["error"]["code"] == "delivery_finalised"
+    with Session(engine) as session:
+        occurrence = session.get(DeliveryOccurrence, occ)
+        subscription = session.get(Subscription, sid)
+        assert occurrence.delivery_slot == "09:00-12:00"
+        assert subscription.preferred_slot == "09:00-12:00"
+        assert session.query(DeliveryOccurrence).filter_by(
+            subscription_id=sid, status="ORDER_PLACED").count() == 1
 
 
 def test_answered_on_website_first_then_chat_tap_is_refused(engine, tg, client):

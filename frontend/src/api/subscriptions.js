@@ -11,6 +11,17 @@ export const listSubscriptions = (token) => request("/api/subscriptions?include_
 export const createSubscription = (token, body) =>
   request("/api/subscriptions", { token, method: "POST", body });
 
+export const getAutopayStatus = (token) => request("/api/payments/autopay", { token });
+
+export const startAutopaySetup = (token) =>
+  request("/api/payments/autopay/setup", { token, method: "POST", body: {} });
+
+export const disableAutopay = (token) =>
+  request("/api/payments/autopay/disable", { token, method: "POST", body: {} });
+
+export const completeAutopaySetup = (token, body) =>
+  request("/api/payments/autopay/setup/complete", { token, method: "POST", body });
+
 export const updateSubscription = (token, id, body) =>
   request(`/api/subscriptions/${id}`, { token, method: "PATCH", body });
 

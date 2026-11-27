@@ -1,5 +1,7 @@
 """Values shared by the subscription module (API, scheduler, WhatsApp flows, seed data)."""
 
+from decimal import Decimal
+
 # Business timezone. Dates shown to customers ("today", delivery dates) and the naive
 # orders.order_datetime are in this zone; timestamptz columns store UTC.
 TIMEZONE = "Asia/Kolkata"
@@ -15,6 +17,12 @@ FREQUENCY_DAYS_MIN, FREQUENCY_DAYS_MAX = 1, 90
 # Used when there is no recommendation for the customer + product.
 DEFAULT_QUANTITY = 1
 DEFAULT_FREQUENCY_DAYS = 7
+SUBSCRIPTION_FEE_AMOUNT = Decimal("1.00")
+
+# Razorpay test-mode mandate enrollment. Revisit these values before enabling live payments.
+RAZORPAY_AUTOPAY_AUTHORIZATION_AMOUNT_PAISE = 100
+RAZORPAY_AUTOPAY_MAX_AMOUNT_PAISE = 500_000
+RAZORPAY_AUTOPAY_VALIDITY_DAYS = 3652
 
 # A delivery can be scheduled no sooner than this many days from today (leaves room for
 # the ~24h WhatsApp reminder) and no later than MAX_SCHEDULE_AHEAD_DAYS.

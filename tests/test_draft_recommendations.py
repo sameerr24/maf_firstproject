@@ -45,6 +45,7 @@ def test_draft_uses_engine_quantity_and_frequency(engine):
     assert r["source"] == "recommendation" and (r["quantity"], r["frequency_days"]) == (2, 7)
     assert r["rank"] >= 1 and 0 < r["score"] <= 1 and r["status"] and r["reason"]
     assert d["total_per_delivery"] == "54.00" and d["saving_per_delivery"] == "6.00"
+    assert d["subscription_fee_due"] is False and d["subscription_fee_amount"] == "0.00"
 
 
 def test_engine_values_match_what_the_recommendations_page_shows(engine):

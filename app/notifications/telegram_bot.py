@@ -126,8 +126,10 @@ def approved_text(product: str, when: str, r: dict) -> str:
     if r["status"] == "out_of_stock":
         return (f"Sorry, {product} just went out of stock, so this delivery couldn't be placed. "
                 f"You have not been charged.\n\nNext delivery: {_next_day(r)}.")
+    fee = (f"\nOne-time subscription fee: ₹{r['subscription_fee']} (recorded only; no payment collected)"
+           if r.get("subscription_fee") not in (None, "0.00") else "")
     return (f"✅ <b>Order placed</b>\n{r['quantity']} x {product}\nDelivery: {when}, {_esc(r['slot'])}\n"
-            f"Total: ₹{r['total']}\nOrder ID: {_esc(r['order_id'])}\n\nNext delivery: {_next_day(r)}.")
+            f"Total: ₹{r['total']}{fee}\nOrder ID: {_esc(r['order_id'])}\n\nNext delivery: {_next_day(r)}.")
 
 
 def skipped_text(product: str, when: str, r: dict) -> str:

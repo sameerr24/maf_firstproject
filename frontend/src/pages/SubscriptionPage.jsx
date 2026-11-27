@@ -2,7 +2,8 @@ import { useCallback, useEffect, useState } from "react";
 import PendingDeliveries from "../components/PendingDeliveries.jsx";
 import ProductImage from "../components/ProductImage.jsx";
 import {
-  cancelSubscription, createSubscription, getDraft, listSubscriptions, skipNextDelivery, updateSubscription,
+  cancelSubscription, completeAutopaySetup, createSubscription, disableAutopay, getAutopayStatus, getDraft,
+  listSubscriptions, skipNextDelivery, startAutopaySetup, updateSubscription,
 } from "../api/subscriptions.js";
 import { formatDate, formatPrice, plural } from "../format.js";
 import "../styles/subscriptions.css";
@@ -22,6 +23,28 @@ function recommendedEvery(rec) {
   return rec?.expected_purchase_interval == null ? null : Math.max(1, Math.round(rec.expected_purchase_interval));
 }
 
+let razorpayScriptPromise;
+
+function loadRazorpayCheckout() {
+  if (window.Razorpay) return Promise.resolve(window.Razorpay);
+  if (razorpayScriptPromise) return razorpayScriptPromise;
+
+  razorpayScriptPromise = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "https://checkout.razorpay.com/v1/checkout.js";
+    script.async = true;
+    script.onload = () => window.Razorpay
+      ? resolve(window.Razorpay)
+      : reject(new Error("Razorpay Checkout did not load correctly."));
+    script.onerror = () => reject(new Error("Could not load Razorpay Checkout."));
+    document.head.appendChild(script);
+  }).catch((error) => {
+    razorpayScriptPromise = null;
+    throw error;
+  });
+  return razorpayScriptPromise;
+}
+
 export default function SubscriptionPage({ product, session, onSessionExpired, onBack }) {
   const token = session?.token;
   const productId = product?.product_id;
@@ -29,6 +52,10 @@ export default function SubscriptionPage({ product, session, onSessionExpired, o
   const [subs, setSubs] = useState(null);
   const [error, setError] = useState(null);
   const [justCreated, setJustCreated] = useState(null);
+  const [autopay, setAutopay] = useState(null);
+  const [autopayBusy, setAutopayBusy] = useState(false);
+  const [autopayMessage, setAutopayMessage] = useState(null);
+  const [autopayError, setAutopayError] = useState(null);
 
   // 401 means the token expired or is invalid: sign in again (App shows the login page).
   const fail = useCallback((e) => {
@@ -44,14 +71,77 @@ export default function SubscriptionPage({ product, session, onSessionExpired, o
   const loadDraft = useCallback(
     () => (productId ? getDraft(token, productId).then((d) => setDraft(d.draft)).catch(fail) : Promise.resolve()),
     [token, productId, fail]);
+  const loadAutopay = useCallback(
+    () => getAutopayStatus(token).then((d) => setAutopay(d.autopay)).catch(fail), [token, fail]);
 
   useEffect(() => {
     setError(null);
     loadSubs();
     loadDraft();
-  }, [loadSubs, loadDraft]);
+    loadAutopay();
+  }, [loadSubs, loadDraft, loadAutopay]);
 
-  const refresh = useCallback(() => Promise.all([loadSubs(), loadDraft()]), [loadSubs, loadDraft]);
+  const refresh = useCallback(
+    () => Promise.all([loadSubs(), loadDraft(), loadAutopay()]), [loadSubs, loadDraft, loadAutopay]);
+
+  const turnOffAutopay = async () => {
+    if (!window.confirm("Disable Autopay for this account? Razorpay will start closing the mandate.")) return;
+    setAutopayBusy(true);
+    setAutopayError(null);
+    setAutopayMessage(null);
+    try {
+      const response = await disableAutopay(token);
+      setAutopay(response.autopay);
+      setAutopayMessage(response.autopay.cancellation_pending
+        ? "Cancellation requested. Razorpay and your bank may take time to confirm closure."
+        : "Autopay has been disabled.");
+    } catch (e) {
+      if (e.status === 401) onSessionExpired();
+      else setAutopayError(e.message);
+    } finally {
+      setAutopayBusy(false);
+    }
+  };
+
+  const setUpAutopayAgain = async () => {
+    setAutopayBusy(true);
+    setAutopayError(null);
+    setAutopayMessage(null);
+    try {
+      const { checkout } = await startAutopaySetup(token);
+      const Razorpay = await loadRazorpayCheckout();
+      const payment = new Razorpay({
+        ...checkout,
+        handler: async (result) => {
+          try {
+            const response = await completeAutopaySetup(token, {
+              setup_id: checkout.setup_id,
+              razorpay_order_id: result.razorpay_order_id,
+              razorpay_payment_id: result.razorpay_payment_id,
+              razorpay_signature: result.razorpay_signature,
+            });
+            setAutopay(response.autopay);
+            setAutopayMessage("Autopay is set up for this account.");
+          } catch (e) {
+            if (e.status === 401) onSessionExpired();
+            else setAutopayError(e.message);
+          } finally {
+            setAutopayBusy(false);
+          }
+        },
+        modal: { ondismiss: () => setAutopayBusy(false) },
+      });
+      payment.on("payment.failed", () => {
+        setAutopayError("Autopay authorization failed. No payment mandate was activated.");
+        setAutopayBusy(false);
+      });
+      payment.open();
+    } catch (e) {
+      if (e.status === 401) onSessionExpired();
+      else setAutopayError(e.message);
+      setAutopayBusy(false);
+    }
+  };
 
   const onCreated = (sub) => {
     setJustCreated(sub);
@@ -74,6 +164,32 @@ export default function SubscriptionPage({ product, session, onSessionExpired, o
       )}
 
       <div className="subs">
+        {autopay && ["active", "cancelled"].includes(autopay.status) && (
+          <section className="sub-new autopay-management" aria-labelledby="autopay-management-title">
+            <div>
+              <p className="eyebrow">Payment settings</p>
+              <h2 id="autopay-management-title">Autopay</h2>
+              <p className="muted">
+                {autopay.status === "active"
+                  ? `Active for this account (up to ${formatPrice(autopay.max_delivery_amount)} per delivery).`
+                  : "Autopay is disabled for this account."}
+              </p>
+            </div>
+            <div className="sub-new__actions">
+              {autopay.status === "active" ? (
+                <button type="button" className="btn btn--ghost" disabled={autopayBusy} onClick={turnOffAutopay}>
+                  {autopayBusy ? "Disabling…" : "Disable Autopay"}
+                </button>
+              ) : autopay.configured && (
+                <button type="button" className="btn btn--primary" disabled={autopayBusy} onClick={setUpAutopayAgain}>
+                  {autopayBusy ? "Setting up…" : "Set up Autopay again"}
+                </button>
+              )}
+            </div>
+            {autopayMessage && <p className="sub-ok" role="status">{autopayMessage}</p>}
+            {autopayError && <p className="form-error" role="alert">{autopayError}</p>}
+          </section>
+        )}
         <PendingDeliveries token={token} onChanged={loadSubs} onFail={fail} />
 
         {product && !draft && !error && <div className="sub-new sub-new--loading skeleton" aria-busy="true" />}
@@ -101,6 +217,7 @@ export default function SubscriptionPage({ product, session, onSessionExpired, o
             </section>
           ) : (
             <NewSubscription key={productId} rec={product} draft={draft} token={token}
+                             autopay={autopay} setAutopay={setAutopay}
                              onCreated={onCreated} onFail={fail} onRecheck={loadDraft} />
           )
         )}
@@ -133,7 +250,7 @@ export default function SubscriptionPage({ product, session, onSessionExpired, o
 }
 
 // --------------------------------------------------------------------------- new subscription
-function NewSubscription({ rec, draft, token, onCreated, onFail, onRecheck }) {
+function NewSubscription({ rec, draft, token, autopay, setAutopay, onCreated, onFail, onRecheck }) {
   const { limits, product: offer } = draft;
   // The draft carries the engine's recommendation (server side); the card's values are the fallback.
   const fromEngine = draft.recommendation?.source === "recommendation";
@@ -145,7 +262,6 @@ function NewSubscription({ rec, draft, token, onCreated, onFail, onRecheck }) {
   const [slot, setSlot] = useState("");
   const [busy, setBusy] = useState(false);
   const [formError, setFormError] = useState(null);
-
   const q = toInt(quantity);
   const f = toInt(frequency);
   const valid = inRange(q, limits.quantity) && inRange(f, limits.frequency_days)
@@ -161,6 +277,7 @@ function NewSubscription({ rec, draft, token, onCreated, onFail, onRecheck }) {
     createSubscription(token, {
       product_id: offer.product_id, quantity: q, frequency_days: f,
       first_delivery_date: firstDate, preferred_slot: slot || null,
+      autopay_mode: autopay?.status === "active" ? "existing" : "later",
     })
       .then((r) => onCreated(r.subscription))
       .catch((e) => {
@@ -169,6 +286,51 @@ function NewSubscription({ rec, draft, token, onCreated, onFail, onRecheck }) {
         else setFormError(e.message);
       })
       .finally(() => setBusy(false));
+  };
+
+  const setupAutopayAndSubscribe = async () => {
+    if (!valid || !draft.messaging_ready || !autopay?.configured || busy) return;
+    setBusy(true);
+    setFormError(null);
+    try {
+      const { checkout } = await startAutopaySetup(token);
+      const Razorpay = await loadRazorpayCheckout();
+      const payment = new Razorpay({
+        ...checkout,
+        handler: async (result) => {
+          try {
+            const confirmed = await completeAutopaySetup(token, {
+              setup_id: checkout.setup_id,
+              razorpay_order_id: result.razorpay_order_id,
+              razorpay_payment_id: result.razorpay_payment_id,
+              razorpay_signature: result.razorpay_signature,
+            });
+            setAutopay(confirmed.autopay);
+            const created = await createSubscription(token, {
+              product_id: offer.product_id, quantity: q, frequency_days: f,
+              first_delivery_date: firstDate, preferred_slot: slot || null, autopay_mode: "existing",
+            });
+            onCreated(created.subscription);
+          } catch (e) {
+            if (e.status === 401) onFail(e);
+            else setFormError(e.message);
+            setBusy(false);
+          }
+        },
+        modal: {
+          ondismiss: () => setBusy(false),
+        },
+      });
+      payment.on("payment.failed", () => {
+        setFormError("Autopay authorization failed. No subscription was created.");
+        setBusy(false);
+      });
+      payment.open();
+    } catch (e) {
+      if (e.status === 401) onFail(e);
+      else setFormError(e.message);
+      setBusy(false);
+    }
   };
 
   return (
@@ -245,7 +407,17 @@ function NewSubscription({ rec, draft, token, onCreated, onFail, onRecheck }) {
         </label>
 
         <dl className="summary sub-form__summary">
-          <div><dt>Per delivery</dt><dd>{valid ? formatPrice(unit * q) : "-"}</dd></div>
+          <div><dt>Products per delivery</dt><dd>{valid ? formatPrice(unit * q) : "-"}</dd></div>
+          <div>
+            <dt>One-time fee (first approved order)</dt>
+            <dd>{draft.subscription_fee_due
+              ? formatPrice(Number(draft.subscription_fee_amount))
+              : "Covered for this active period"}</dd>
+          </div>
+          {draft.subscription_fee_due && valid && (
+            <div><dt>First order estimate</dt>
+              <dd>{formatPrice(unit * q + Number(draft.subscription_fee_amount))}</dd></div>
+          )}
           {offer.has_discount && valid && (
             <div><dt>You save per delivery</dt><dd className="accent">{formatPrice((regular - unit) * q)}</dd></div>
           )}
@@ -255,14 +427,33 @@ function NewSubscription({ rec, draft, token, onCreated, onFail, onRecheck }) {
         <p className="sub-form__note">
           The day before each delivery we'll message you to approve it, skip it or delay it. You're never charged
           without approving.
+          {draft.subscription_fee_due && <> The one-time fee is recorded in your first approved order; this demo
+            does not collect a payment.</>}
         </p>
 
         {formError && <p className="form-error" role="alert">{formError}</p>}
 
         <div className="sub-new__actions">
-          <button type="submit" className="btn btn--primary" disabled={!valid || busy || !draft.messaging_ready}>
-            {busy ? "Subscribing…" : "Confirm subscription"}
-          </button>
+          {autopay?.status === "active" ? (
+            <button type="submit" className="btn btn--primary"
+                    disabled={!valid || busy || !draft.messaging_ready}>
+              {busy ? "Please wait…" : "Subscribe using existing Autopay"}
+            </button>
+          ) : (
+            <>
+              <button type="button" className="btn btn--primary"
+                      disabled={!valid || busy || !draft.messaging_ready || !autopay?.configured}
+                      onClick={setupAutopayAndSubscribe}>
+                {busy ? "Setting up Autopay…" : "Set up Autopay and subscribe"}
+              </button>
+              {autopay?.setup_later_allowed !== false && (
+                <button type="submit" className="btn btn--ghost"
+                        disabled={!valid || busy || !draft.messaging_ready}>
+                  {busy ? "Please wait…" : "Subscribe, set up Autopay later"}
+                </button>
+              )}
+            </>
+          )}
         </div>
       </form>
     </section>

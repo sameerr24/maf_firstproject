@@ -113,6 +113,8 @@ class Customer(Base):
     customer_name: Mapped[str | None] = mapped_column(String, info=APP_COLUMN)
     phone_e164: Mapped[str | None] = mapped_column(String, info=APP_COLUMN)
     whatsapp_opt_in: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=false(), info=APP_COLUMN)
+    subscription_fee_recorded: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=false(), info=APP_COLUMN)
 
     orders: Mapped[list[Order]] = relationship(back_populates="customer")
     profiles: Mapped[list[CustomerProductProfile]] = relationship(back_populates="customer")
@@ -139,6 +141,8 @@ class Order(Base):
     # App-managed (subscriptions migration). CSV orders are all 'manual'.
     source: Mapped[str] = mapped_column(String, nullable=False, server_default=text("'manual'"), info=APP_COLUMN)
     delivery_slot: Mapped[str | None] = mapped_column(String, info=APP_COLUMN)
+    subscription_fee: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2), nullable=False, server_default=text("0"), info=APP_COLUMN)
 
     customer: Mapped[Customer] = relationship(back_populates="orders")
     items: Mapped[list[OrderItem]] = relationship(back_populates="order")
@@ -147,6 +151,7 @@ class Order(Base):
         CheckConstraint("item_count > 0", name="ck_orders_item_count"),
         CheckConstraint("unit_count >= item_count", name="ck_orders_unit_count"),
         CheckConstraint("order_total >= 0", name="ck_orders_total"),
+        CheckConstraint("subscription_fee >= 0", name="ck_orders_subscription_fee"),
         CheckConstraint("CAST(order_datetime AS DATE) = order_date", name="ck_orders_date_matches_datetime"),
         CheckConstraint(_in("source", ORDER_SOURCES), name="orders_source_check"),
         # Purchase-history lookups: a customer's orders in date order.

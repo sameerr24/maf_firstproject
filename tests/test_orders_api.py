@@ -62,6 +62,7 @@ def test_newest_first_with_items_and_subscription_link(seeded):
     assert first["order_id"] == ids["sub_order"] and first["source"] == "subscription"
     assert first["subscription_id"] == ids["subscription_id"] and first["delivery_slot"] == "07:00-09:00"
     assert first["order_total"] == "81.00" and first["items"][0]["quantity"] == 3
+    assert first["subscription_fee"] == "0.00"
     assert second["order_id"] == "ORD-0024" and second["subscription_id"] is None
     assert [i["line_total"] for i in second["items"]] == ["54.00", "99.00"] and second["order_total"] == "153.00"
     assert second["items"][0]["product"]["product_id"] == MILK

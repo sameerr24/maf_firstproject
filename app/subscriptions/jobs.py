@@ -77,6 +77,8 @@ def _reminder_price(sub: Subscription) -> str:
     """Total for this delivery at today's subscriber price; flags a change since subscribing."""
     current = sub.product.discount_price
     text = _fmt_rupees(current * sub.quantity)
+    if not sub.customer.subscription_fee_recorded:
+        text += f" (includes one-time fee {_fmt_rupees(C.SUBSCRIPTION_FEE_AMOUNT)})"
     if current != sub.unit_price_at_subscription:
         text += f" (price changed, was {_fmt_rupees(sub.unit_price_at_subscription * sub.quantity)})"
     return text

@@ -139,12 +139,14 @@ function PendingDelivery({ delivery: d, token, onFail, onAnswered, onStale }) {
         </h3>
         <p className="pending-card__text">
           Total <strong>{formatPrice(Number(d.total))}</strong>
+          {Number(d.subscription_fee) > 0 && <> (includes one-time fee {formatPrice(Number(d.subscription_fee))})</>}
           {Number(d.saving) > 0 && <> (you save <span className="accent">{formatPrice(Number(d.saving))}</span>)</>}
           {d.price_changed && <> · price changed, was {formatPrice(Number(d.previous_total))}</>}
           {d.delayed_days > 0 && <> · delayed by {plural(d.delayed_days, "day")}</>}
         </p>
         <p className="muted pending-card__note">
           You won't be charged unless you approve.
+          {Number(d.subscription_fee) > 0 && <> The one-time fee is recorded in the order total; no payment is collected in this demo.</>}
           {d.reply_by && <> If we don't hear from you by <strong>{formatReplyBy(d.reply_by)}</strong>, this delivery will be skipped.</>}
         </p>
 

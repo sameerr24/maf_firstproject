@@ -8,7 +8,7 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import DeliveryOccurrence, Inventory, Subscription, TelegramLink, WhatsAppMessage
+from app.models import Customer, DeliveryOccurrence, Inventory, Subscription, TelegramLink, WhatsAppMessage
 from app.notifications.sender import TelegramSender
 from app.notifications.telegram_api import TelegramBlocked
 from app.notifications.telegram_bot import process_update
@@ -88,8 +88,10 @@ def tg():
     return FakeTelegram()
 
 
-def subscribe(engine, customer=ME, **data):
+def subscribe(engine, customer=ME, *, fee_unrecorded=False, **data):
     with Session(engine) as s:
+        if fee_unrecorded:
+            s.get(Customer, customer).subscription_fee_recorded = False
         sid = svc.create_subscription(s, customer, {"product_id": MILK, **data}, today=TODAY)["subscription_id"]
         s.commit()
     return sid

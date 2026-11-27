@@ -29,11 +29,13 @@ def create_app(config_name: str | None = None, overrides: dict | None = None) ->
 
     from app.notifications import bp as notifications_bp
     from app.orders import bp as orders_bp
+    from app.payments import bp as payments_bp
     from app.products import bp as products_bp
     from app.subscriptions import bp as subscriptions_bp
 
     app.register_blueprint(products_bp, url_prefix="/api/products")
     app.register_blueprint(subscriptions_bp, url_prefix="/api/subscriptions")
+    app.register_blueprint(payments_bp, url_prefix="/api/payments")
     app.register_blueprint(orders_bp, url_prefix="/api/orders")
     app.register_blueprint(notifications_bp, url_prefix="/webhooks")
     if app.config.get("DEV_ENDPOINTS"):

@@ -80,12 +80,12 @@ def schema_engine(admin_engine):
                 _product(TV, 3, "tv", "20000.00", "18000.00", replenishable=False),
                 Customer(customer_id=ME, signup_date=TODAY, behaviour_segment="regular",
                          household_size=2, preferred_weekday="Sat",
-                         phone_e164="+919800000001", whatsapp_opt_in=True),
+                         phone_e164="+919800000001", whatsapp_opt_in=True, subscription_fee_recorded=True),
                 Customer(customer_id=OTHER, signup_date=TODAY, behaviour_segment="regular",
                          household_size=1, preferred_weekday="Mon",
-                         phone_e164="+919800000002", whatsapp_opt_in=True),
+                         phone_e164="+919800000002", whatsapp_opt_in=True, subscription_fee_recorded=True),
                 Customer(customer_id=NOWA, signup_date=TODAY, behaviour_segment="regular",
-                         household_size=1, preferred_weekday="Wed"),
+                         household_size=1, preferred_weekday="Wed", subscription_fee_recorded=True),
             ])
             s.flush()
             s.add_all([Inventory(product_id=MILK, available_qty=5), Inventory(product_id=SOAP, available_qty=0)])

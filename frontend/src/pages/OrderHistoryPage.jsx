@@ -156,6 +156,9 @@ function OrderCard({ order }) {
           <strong className="order__total">{formatPrice(Number(order.order_total))}</strong>
         </div>
       </header>
+      {Number(order.subscription_fee) > 0 && (
+        <p className="order__meta">Includes one-time subscription fee {formatPrice(Number(order.subscription_fee))} (recorded only).</p>
+      )}
 
       <ul className="order__items">
         {items.map((it) => (

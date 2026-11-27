@@ -158,9 +158,9 @@ def run_checks(engine: Engine, sources: dict[str, SourceTable] | None) -> list[C
             "order_items: quantity > 0": "SELECT count(*) FROM order_items WHERE quantity <= 0",
             "order_items: line_total = quantity * unit_price":
                 "SELECT count(*) FROM order_items WHERE line_total <> quantity * unit_price",
-            "orders: order_total = sum(line_total)":
+            "orders: order_total = sum(line_total) + subscription_fee":
                 "SELECT count(*) FROM orders o JOIN (SELECT order_id, sum(line_total) s FROM order_items GROUP BY order_id) i "
-                "USING (order_id) WHERE o.order_total <> i.s",
+                "USING (order_id) WHERE o.order_total <> i.s + o.subscription_fee",
             "orders: item_count / unit_count match items":
                 "SELECT count(*) FROM orders o JOIN (SELECT order_id, count(*) n, sum(quantity) q FROM order_items "
                 "GROUP BY order_id) i USING (order_id) WHERE o.item_count <> i.n OR o.unit_count <> i.q",

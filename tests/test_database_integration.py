@@ -232,7 +232,7 @@ def test_validation_detects_tampering(loaded, sources):
         conn.execute(text("DELETE FROM customer_product_profiles WHERE purchase_occasions > 0 "
                           "AND customer_id = 'CUST-0001' AND product_id = 'bb-242671'"))
     checks = {c.name: c for c in vdb.run_checks(loaded, sources)}
-    assert checks["orders: order_total = sum(line_total)"].status == vdb.FAIL
+    assert checks["orders: order_total = sum(line_total) + subscription_fee"].status == vdb.FAIL
     assert checks["orders: values identical to CSV"].status == vdb.FAIL
     assert checks["customer_product_profiles: rows match CSV"].status == vdb.FAIL
     assert checks["purchased (customer, product) pairs without a profile"].status == vdb.WARN
