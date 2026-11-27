@@ -23,6 +23,8 @@
      APPROVE/SKIP/STOP buttons
    - a delivery date that is already today or past (scheduler was down, time travel):
      no reminder, the subscription moves to its next schedulable cycle
+   Subscriptions with a pending cancellation request (app/subscriptions/cancellation.py) are
+   left alone until the customer answers.
 
 Every subscription/occurrence is handled in its own transaction, so one failure doesn't
 block the rest. A PostgreSQL advisory lock makes concurrent runs (several processes, the
@@ -44,7 +46,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from app import constants as C
-from app.models import DeliveryOccurrence, Inventory, Subscription
+from app.models import CancellationRequest, DeliveryOccurrence, Inventory, Subscription
 from app.notifications.sender import (
     TEMPLATE_OUT_OF_STOCK, TEMPLATE_REMINDER, TEMPLATE_SKIPPED, MessageSender, can_message, get_sender,
 )
@@ -288,9 +290,12 @@ def _remind(engine: Engine, now: dt.datetime, today: dt.date, sender: MessageSen
     horizon = today + dt.timedelta(days=C.REMINDER_DAYS_BEFORE)
     has_occurrence = exists().where(DeliveryOccurrence.subscription_id == Subscription.subscription_id,
                                     DeliveryOccurrence.scheduled_date == Subscription.next_delivery_date)
+    cancel_pending = exists().where(CancellationRequest.subscription_id == Subscription.subscription_id,
+                                    CancellationRequest.status == "PENDING")
     with Session(engine) as s:
         ids = s.scalars(select(Subscription.subscription_id).where(
-            Subscription.status == "ACTIVE", Subscription.next_delivery_date <= horizon, ~has_occurrence)
+            Subscription.status == "ACTIVE", Subscription.next_delivery_date <= horizon, ~has_occurrence,
+            ~cancel_pending)
             .order_by(Subscription.next_delivery_date, Subscription.subscription_id)).all()
 
     def remind_subscription(s: Session, sid: int) -> str | None:
@@ -303,6 +308,9 @@ def _remind(engine: Engine, now: dt.datetime, today: dt.date, sender: MessageSen
         if s.scalar(select(DeliveryOccurrence.occurrence_id).where(
                 DeliveryOccurrence.subscription_id == sid, DeliveryOccurrence.scheduled_date == d)):
             return None                                         # already handled; waiting for a reply
+        if s.scalar(select(CancellationRequest.id).where(
+                CancellationRequest.subscription_id == sid, CancellationRequest.status == "PENDING")):
+            return None                                         # waiting for the customer to confirm cancelling
 
         if d <= today:                                          # too late to ask: move to the next cycle
             sub.next_delivery_date = next_free_date(s, sub, d, today)

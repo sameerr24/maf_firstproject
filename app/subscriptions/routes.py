@@ -20,7 +20,7 @@ from app.errors import ValidationError
 from app.models import DeliveryOccurrence, Subscription
 from app.notifications import chat_sync
 from app.notifications import telegram_bot as bot
-from app.subscriptions import bp, service
+from app.subscriptions import bp, cancellation, service
 from app.timeutil import fmt_day
 
 
@@ -94,12 +94,47 @@ def update_subscription(subscription_id: int):
 @login_required
 def cancel_subscription(subscription_id: int):
     waiting = _notified(subscription_id)
+    request_id = _pending_request_id(subscription_id)
     sub = service.cancel_subscription(db_session, g.customer_id, subscription_id)
     chat = _settled_reminders(waiting)
+    if request_id is not None:                          # the admin's request is answered too
+        chat.reminders += chat_sync.prepare_cancel_request(db_session, g.customer_id, request_id).reminders
     db_session.commit()
     if chat.reminders:                                  # only worth a message if a reminder was open
         chat_sync.send(chat, bot.stopped_text(html.escape(sub["product"]["product_name"], quote=False)))
     return jsonify(subscription=sub)
+
+
+def _pending_request_id(subscription_id: int) -> int | None:
+    req = cancellation.pending_request(db_session, subscription_id)
+    return req.id if req is not None and req.subscription.customer_id == g.customer_id else None
+
+
+def _answer_cancel_request(subscription_id: int, confirm: bool):
+    """The website's version of the chat's Yes, cancel it / Keep my subscription buttons."""
+    request_id = _pending_request_id(subscription_id)
+    r = cancellation.answer(db_session, g.customer_id, confirm=confirm, channel="dashboard",
+                            subscription_id=subscription_id)
+    chat = chat_sync.prepare_cancel_request(db_session, g.customer_id, request_id) if request_id else None
+    db_session.commit()
+    if chat is not None:
+        sub = r["subscription"]
+        product = html.escape(sub["product"]["product_name"], quote=False)
+        chat_sync.send(chat, cancellation.cancelled_text(product) if r["outcome"] == "cancelled"
+                       else cancellation.kept_text(product, bot._next_day(sub) if sub["next_delivery_date"] else None))
+    return jsonify(r)
+
+
+@bp.post("/<int:subscription_id>/cancel-request/confirm")
+@login_required
+def confirm_cancel_request(subscription_id: int):
+    return _answer_cancel_request(subscription_id, confirm=True)
+
+
+@bp.post("/<int:subscription_id>/cancel-request/decline")
+@login_required
+def decline_cancel_request(subscription_id: int):
+    return _answer_cancel_request(subscription_id, confirm=False)
 
 
 @bp.post("/<int:subscription_id>/skip")

@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { getSubscriptions } from "../api/admin.js";
+import CancelRequestModal, { describeCancelResult } from "../components/CancelRequestModal.jsx";
+import DeliveryActionModal, { describeResult } from "../components/DeliveryActionModal.jsx";
+import DeliveryButtons from "../components/DeliveryButtons.jsx";
 import ProductThumb from "../components/ProductThumb.jsx";
-import { Empty, ErrorBox, Loading } from "../components/States.jsx";
-import { formatDate, formatPrice } from "../format.js";
+import { Empty, ErrorBox, Loading, Notice } from "../components/States.jsx";
+import { formatDate, formatDateTime, formatPrice } from "../format.js";
 import { toHash } from "../router.js";
 
 const PAGE_SIZE = 25;
@@ -12,8 +15,9 @@ const OPEN = {
   DELAYED: ["chip--muted", "Delayed"],
 };
 
-/** Read-only search over active and paused subscriptions. Filters live in the URL hash, so
- *  links from the other pages (a product's subscribers, a held customer) open filtered. */
+/** Search over active and paused subscriptions. The admin can delay or skip an upcoming (not yet
+ *  approved) delivery, or ask the customer to confirm cancelling; nothing else is edited here. Filters live in the URL hash, so links
+ *  from the other pages (a product's subscribers, a held customer) open filtered. */
 export default function SubscriptionsPage({ params, navigate }) {
   const { q: urlQ = "", status = "", product_id: productId = "", customer_id: customerId = "" } = params;
   const page = Math.max(1, Number(params.page) || 1);
@@ -21,6 +25,9 @@ export default function SubscriptionsPage({ params, navigate }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [action, setAction] = useState(null);             // { mode: "delay" | "skip", target }
+  const [notice, setNotice] = useState(null);
+  const [cancelling, setCancelling] = useState(null);     // { mode: "request" | "withdraw", sub }
 
   const setFilters = useCallback((changes) => {
     navigate("subscriptions", { q: urlQ, status, product_id: productId, customer_id: customerId, ...changes,
@@ -41,6 +48,18 @@ export default function SubscriptionsPage({ params, navigate }) {
   }, [urlQ, status, productId, customerId, page]);
   useEffect(() => { load(); }, [load]);
 
+  const acted = (result) => {
+    setNotice(describeResult(result, action.target.product_name));
+    setAction(null);
+    load();
+  };
+
+  const cancelDone = (result) => {
+    setNotice(describeCancelResult(result, cancelling.mode, cancelling.sub.product.product_name));
+    setCancelling(null);
+    load();
+  };
+
   const first = data ? (data.page - 1) * data.page_size + 1 : 0;
   const last = data ? Math.min(data.page * data.page_size, data.total) : 0;
   const filterLabel = (row, kind) => kind === "product"
@@ -52,9 +71,12 @@ export default function SubscriptionsPage({ params, navigate }) {
       <div className="page-head">
         <div>
           <h1 id="subs-title">Subscriptions</h1>
-          <p className="muted">Active and paused subscriptions. Click a product or a customer to filter by it.</p>
+          <p className="muted">Active and paused subscriptions. Click a product or a customer to filter by it.
+            Delay or skip an upcoming delivery that hasn't been approved yet, or ask the customer to confirm
+            cancelling; the customer is told it's for operational reasons.</p>
         </div>
       </div>
+      <Notice notice={notice} onClose={() => setNotice(null)} />
 
       <div className="toolbar">
         <input type="search" className="search" value={q} onChange={(e) => setQ(e.target.value)}
@@ -90,7 +112,7 @@ export default function SubscriptionsPage({ params, navigate }) {
                 <thead>
                   <tr>
                     <th>Customer</th><th>Product</th><th>Plan</th><th>Next delivery</th>
-                    <th>Price</th><th>Status</th>
+                    <th>Price</th><th>Status</th><th>Upcoming delivery</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -130,6 +152,19 @@ export default function SubscriptionsPage({ params, navigate }) {
                           <span className={`chip ${s.status === "ACTIVE" ? "chip--ok" : "chip--muted"}`}>{s.status === "ACTIVE" ? "Active" : "Paused"}</span>
                           {open && <span className={`chip ${open[0]}`}>{open[1]}</span>}
                           {s.at_risk && <div className="small"><a href={toHash("at-risk")}>See at-risk</a></div>}
+                          <CancelCell sub={s} onOpen={(mode) => setCancelling({ mode, sub: s })} />
+                        </td>
+                        <td>
+                          {s.upcoming ? (
+                            <>
+                              <div className="small">{formatDate(s.upcoming.delivery_date)}</div>
+                              <DeliveryButtons onAction={(mode, target) => setAction({ mode, target })} target={{
+                                subscription_id: s.subscription_id, product_name: s.product.product_name,
+                                customer_label: s.customer.customer_name || s.customer.customer_id,
+                                delivery_date: s.upcoming.delivery_date, delay_options: s.upcoming.delay_options,
+                              }} />
+                            </>
+                          ) : <span className="muted small">{s.cancel_request?.status === "PENDING" ? "On hold" : "-"}</span>}
                         </td>
                       </tr>
                     );
@@ -147,6 +182,36 @@ export default function SubscriptionsPage({ params, navigate }) {
           </>
         )}
       {error && data && <p className="form-error" role="alert">Couldn't refresh: {error.message}</p>}
+      {cancelling && (
+        <CancelRequestModal mode={cancelling.mode} sub={cancelling.sub}
+                            onClose={() => setCancelling(null)} onDone={cancelDone} />
+      )}
+      {action && (
+        <DeliveryActionModal mode={action.mode} target={action.target}
+                             onClose={() => setAction(null)} onDone={acted} />
+      )}
     </section>
+  );
+}
+
+/** Cancellation request state and button for one subscription row. */
+function CancelCell({ sub, onOpen }) {
+  const req = sub.cancel_request;
+  if (req?.status === "PENDING") {
+    return (
+      <div className="cancel-cell">
+        <span className="chip chip--low">Cancellation requested</span>
+        <div className="muted small">Awaiting customer since {formatDateTime(req.requested_at)}</div>
+        <button type="button" className="link small" onClick={() => onOpen("withdraw")}>Withdraw</button>
+      </div>
+    );
+  }
+  return (
+    <div className="cancel-cell">
+      {req?.status === "DECLINED" && (
+        <div className="muted small">Customer kept it ({formatDateTime(req.responded_at)})</div>
+      )}
+      <button type="button" className="link small" onClick={() => onOpen("request")}>Request cancellation</button>
+    </div>
   );
 }

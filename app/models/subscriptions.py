@@ -17,7 +17,7 @@ OCCURRENCE_STATUSES = (
     "SCHEDULED", "NOTIFIED", "APPROVED", "ORDER_PLACED", "SKIPPED", "DELAYED", "OUT_OF_STOCK", "CANCELLED",
     "STOCK_HOLD",       # short of stock at reminder time; waiting for a restock (migration 004)
 )
-SKIP_REASONS = ("USER_SKIP", "NO_RESPONSE", "OUT_OF_STOCK")
+SKIP_REASONS = ("USER_SKIP", "NO_RESPONSE", "OUT_OF_STOCK", "OPERATIONAL")   # OPERATIONAL: admin skip (migration 006)
 
 
 class Subscription(SubscriptionsBase):

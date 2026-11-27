@@ -41,3 +41,11 @@ export const restock = (productId, quantity, note) =>
   request(`/inventory/${encodeURIComponent(productId)}/restock`, { method: "POST", body: { quantity, note: note || undefined } });
 export const adjust = (productId, availableQty, reason) =>
   request(`/inventory/${encodeURIComponent(productId)}/adjust`, { method: "POST", body: { available_qty: availableQty, reason } });
+export const delayDelivery = (subscriptionId, days) =>
+  request(`/subscriptions/${encodeURIComponent(subscriptionId)}/delay`, { method: "POST", body: { days } });
+export const skipDelivery = (subscriptionId) =>
+  request(`/subscriptions/${encodeURIComponent(subscriptionId)}/skip`, { method: "POST", body: {} });
+export const requestCancellation = (subscriptionId) =>
+  request(`/subscriptions/${encodeURIComponent(subscriptionId)}/cancel-request`, { method: "POST", body: {} });
+export const withdrawCancellation = (subscriptionId) =>
+  request(`/subscriptions/${encodeURIComponent(subscriptionId)}/cancel-request/withdraw`, { method: "POST", body: {} });

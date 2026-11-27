@@ -21,7 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import WhatsAppMessage
-from app.notifications.sender import TEMPLATE_REMINDER, telegram_link
+from app.notifications.sender import TEMPLATE_CANCEL_REQUEST, TEMPLATE_REMINDER, telegram_link
 
 log = logging.getLogger(__name__)
 
@@ -46,13 +46,29 @@ def prepare(session: Session, customer_id: str, occurrence_ids: list[int]) -> Ch
         WhatsAppMessage.occurrence_id.in_(occurrence_ids), WhatsAppMessage.direction == "OUTBOUND",
         WhatsAppMessage.wa_message_id.like("tg:%"),
         WhatsAppMessage.payload["template"].astext == TEMPLATE_REMINDER)).all()
+    _add_messages(update, ids)
+    return update
+
+
+def prepare_cancel_request(session: Session, customer_id: str, request_id: int) -> ChatUpdate:
+    """Read (before commit) where the cancellation request (Yes / Keep buttons) was sent."""
+    link = telegram_link(session, customer_id)
+    update = ChatUpdate(chat_id=link.chat_id if link else None)
+    rows = session.execute(select(WhatsAppMessage.wa_message_id, WhatsAppMessage.payload).where(
+        WhatsAppMessage.customer_id == customer_id, WhatsAppMessage.direction == "OUTBOUND",
+        WhatsAppMessage.wa_message_id.like("tg:%"),
+        WhatsAppMessage.payload["template"].astext == TEMPLATE_CANCEL_REQUEST)).all()
+    _add_messages(update, [mid for mid, payload in rows if f"CXL_YES:{request_id}" in (payload.get("buttons") or [])])
+    return update
+
+
+def _add_messages(update: ChatUpdate, ids) -> None:
     for mid in ids:
         try:
             _, chat, msg = mid.split(":")
             update.reminders.append((int(chat), int(msg)))
         except ValueError:
             log.debug("Unexpected Telegram message id %r", mid)
-    return update
 
 
 def _client():
@@ -65,7 +81,7 @@ def _client():
     return _clients[token]
 
 
-def send(update: ChatUpdate, text: str | None = None) -> None:
+def send(update: ChatUpdate, text: str | None = None, footer: str | None = "Done on the website.") -> None:
     """Make the Telegram calls (after commit). Never raises."""
     client = _client()
     if client is None:
@@ -78,6 +94,6 @@ def send(update: ChatUpdate, text: str | None = None) -> None:
     text = text or update.text
     if text and update.chat_id is not None:
         try:
-            client.send_message(update.chat_id, f"{text}\n\n<i>Done on the website.</i>")
+            client.send_message(update.chat_id, f"{text}\n\n<i>{footer}</i>" if footer else text)
         except Exception:
             log.warning("Couldn't post the website reply to chat %s", update.chat_id, exc_info=True)

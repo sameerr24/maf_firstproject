@@ -30,6 +30,9 @@ log = logging.getLogger(__name__)
 TEMPLATE_REMINDER = "subscription_delivery_reminder"
 TEMPLATE_SKIPPED = "delivery_skipped_notice"
 TEMPLATE_OUT_OF_STOCK = "delivery_out_of_stock_notice"
+TEMPLATE_OPS_DELAYED = "delivery_delayed_operational_notice"    # admin panel: Delay
+TEMPLATE_OPS_SKIPPED = "delivery_skipped_operational_notice"    # admin panel: Skip
+TEMPLATE_CANCEL_REQUEST = "subscription_cancellation_request"     # admin panel: Request cancellation
 
 # Body variables of each template, in {{1}}, {{2}}, ... order. Must match the WhatsApp
 # templates submitted to Meta (docs/WHATSAPP_TEMPLATES.md).
@@ -37,9 +40,13 @@ TEMPLATE_BODY_PARAMS: dict[str, tuple[str, ...]] = {
     TEMPLATE_REMINDER: ("quantity", "product", "date", "price", "reply_by"),
     TEMPLATE_SKIPPED: ("product", "date", "next_date"),
     TEMPLATE_OUT_OF_STOCK: ("product", "quantity", "date", "next_date"),
+    TEMPLATE_OPS_DELAYED: ("product", "date", "new_date"),
+    TEMPLATE_OPS_SKIPPED: ("product", "date", "next_date"),
+    TEMPLATE_CANCEL_REQUEST: ("product", "quantity", "frequency"),
 }
 # Quick-reply buttons per template, in button order (payloads are set per message).
-TEMPLATE_BUTTONS: dict[str, int] = {TEMPLATE_REMINDER: 3, TEMPLATE_SKIPPED: 0, TEMPLATE_OUT_OF_STOCK: 0}
+TEMPLATE_BUTTONS: dict[str, int] = {TEMPLATE_REMINDER: 3, TEMPLATE_SKIPPED: 0, TEMPLATE_OUT_OF_STOCK: 0,
+                                    TEMPLATE_OPS_DELAYED: 0, TEMPLATE_OPS_SKIPPED: 0, TEMPLATE_CANCEL_REQUEST: 2}
 
 # The same wording as the WhatsApp templates, for channels that send plain text (Telegram).
 TEMPLATE_TEXT: dict[str, str] = {
@@ -60,9 +67,27 @@ TEMPLATE_TEXT: dict[str, str] = {
         "{date}. You have not been charged.\n\n"
         "Your next delivery is scheduled for {next_date}. We will send you a reminder before then."
     ),
+    TEMPLATE_OPS_DELAYED: (
+        "Due to operational delays, your {product} delivery for {date} has moved to {new_date}. "
+        "You have not been charged.\n\n"
+        "We will send you a reminder to approve it before then."
+    ),
+    TEMPLATE_OPS_SKIPPED: (
+        "Due to operational delays, we can't deliver your {product} on {date}, so this delivery has "
+        "been skipped. You have not been charged.\n\n"
+        "Your next delivery is scheduled for {next_date}. We will send you a reminder before then."
+    ),
+    TEMPLATE_CANCEL_REQUEST: (
+        "<b>Please confirm</b>\n\n"
+        "Due to operational reasons, we may not be able to continue your {product} subscription "
+        "({quantity} {frequency}). Would you like to cancel it?\n\n"
+        "Until you reply, we won't schedule any deliveries. You won't be charged for anything you "
+        "haven't approved."
+    ),
 }
 FOOTER = "<i>Smart Reorder subscriptions</i>"
-BUTTON_LABELS = {"APPROVE": "Approve", "SKIP": "Skip or delay", "STOP": "Stop subscription"}
+BUTTON_LABELS = {"APPROVE": "Approve", "SKIP": "Skip or delay", "STOP": "Stop subscription",
+                 "CXL_YES": "Yes, cancel it", "CXL_NO": "Keep my subscription"}
 
 
 def body_parameters(template: str, params: dict[str, Any], buttons: list[str] | None = None) -> list[str]:

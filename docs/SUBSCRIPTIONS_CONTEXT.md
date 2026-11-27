@@ -37,7 +37,7 @@ Added by Shubham's migration:
 - orders: source ('manual' | 'subscription'), delivery_slot
 - inventory(product_id PK, available_qty CHECK >= 0, updated_at)
 - subscriptions: customer_id, product_id, quantity, frequency_days, unit_price_at_subscription, status ACTIVE|PAUSED|CANCELLED, next_delivery_date, preferred_slot, paused_until, recommended_quantity, recommended_frequency_days, timestamps. Partial unique index `uq_live_subscription` allows one non-cancelled subscription per customer + product.
-- delivery_occurrences: one row per delivery cycle. Status SCHEDULED, NOTIFIED, APPROVED, ORDER_PLACED, SKIPPED, DELAYED, OUT_OF_STOCK, CANCELLED, STOCK_HOLD (migration 004). skip_reason USER_SKIP | NO_RESPONSE | OUT_OF_STOCK, delay_days, delivery_slot, unit_price_at_order, notified_at, response_deadline, hold_until (004), responded_at, order_id. UNIQUE(subscription_id, scheduled_date).
+- delivery_occurrences: one row per delivery cycle. Status SCHEDULED, NOTIFIED, APPROVED, ORDER_PLACED, SKIPPED, DELAYED, OUT_OF_STOCK, CANCELLED, STOCK_HOLD (migration 004). skip_reason USER_SKIP | NO_RESPONSE | OUT_OF_STOCK | OPERATIONAL (migration 006, admin skip), delay_days, delivery_slot, unit_price_at_order, notified_at, response_deadline, hold_until (004), responded_at, order_id. UNIQUE(subscription_id, scheduled_date).
 - inventory_movements (migration 005): product_id, delta (≠ 0), reason RESTOCK | ADJUST | ORDER, occurrence_id, note, created_at. Every stock change is logged.
 - whatsapp_messages: wa_message_id UNIQUE (for webhook dedupe), occurrence_id, customer_id, direction, message_type, payload jsonb.
 RLS is enabled with no policies. Flask connects with the postgres connection string, so it bypasses RLS. React talks only to Flask, never directly to Supabase.
@@ -70,7 +70,7 @@ RLS is enabled with no policies. Flask connects with the postgres connection str
 ## API endpoints (Shubham)
 GET /api/products/:id · GET /api/subscriptions/draft?product_id=&rec_id= · GET/POST /api/subscriptions · PATCH/DELETE /api/subscriptions/:id · POST /api/subscriptions/:id/skip · GET /api/subscriptions/deliveries/pending · POST /api/subscriptions/deliveries/:occurrence_id/{approve,skip,delay} · GET /api/orders · GET/POST /webhooks/whatsapp · POST /api/dev/run-scheduler
 
-Admin app (separate, 127.0.0.1:5002, see `docs/ADMIN_PANEL_CONTEXT.md`): GET /api/admin/at-risk · GET /api/admin/inventory · POST /api/admin/inventory/:product_id/{restock,adjust} · GET /api/admin/inventory/:product_id/movements · GET /api/admin/subscriptions
+Admin app (separate, 127.0.0.1:5002, see `docs/ADMIN_PANEL_CONTEXT.md`): GET /api/admin/at-risk · GET /api/admin/inventory · POST /api/admin/inventory/:product_id/{restock,adjust} · GET /api/admin/inventory/:product_id/movements · GET /api/admin/subscriptions · POST /api/admin/subscriptions/:id/{delay,skip} · POST /api/admin/subscriptions/:id/cancel-request[/withdraw]
 
 ## Decisions (agreed with Sameer, 2026-11-24)
 
@@ -142,6 +142,19 @@ Admin app (separate, 127.0.0.1:5002, see `docs/ADMIN_PANEL_CONTEXT.md`): GET /ap
 - Not restocked by 18:00: OUT_OF_STOCK and the out-of-stock notice, exactly as before. A reminder created after 18:00 the day before goes straight to out of stock.
 - Free stock = on hand minus units promised to reminders awaiting a reply. Before, each subscription was checked alone, so with 5 in stock and two orders of 3 both were reminded and the second approval failed; now the second is held.
 - Pause, cancel and "Skip next" clear a hold like any pending delivery. Approval keeps its own hard check, so nothing is charged without stock.
+
+**Admin delay / skip for operational reasons** (Shubham, 2026-11-28)
+- From the admin panel, a delivery nobody has approved yet (held, reminded, delayed, or the upcoming one with no reminder yet) can be delayed by 1-2 days (same limits as the customer: at most 2 in total, before the next cycle) or skipped. Approved orders can't be changed this way.
+- Delay: the delivery becomes DELAYED (cycle unchanged); the scheduler sends a fresh reminder before the new date, which must be approved again. Skip: SKIPPED / OPERATIONAL and the subscription moves to its next cycle.
+- The customer is told with `delivery_delayed_operational_notice` / `delivery_skipped_operational_notice` ("Due to operational delays, ..."). Nothing is charged.
+- Delaying or skipping a reminder awaiting a reply frees the stock it had promised, so held deliveries of that product are released right after. A delivery dated today or earlier can't be changed.
+
+**Admin cancellation requests: the customer confirms** (Shubham, 2026-11-28; `app/subscriptions/cancellation.py`, migration 007)
+- The admin can't cancel a subscription; they ask the customer to confirm (`cancellation_requests`, status PENDING, one pending per subscription). The customer gets `subscription_cancellation_request` on Telegram ("Due to operational reasons, ...", buttons Yes, cancel it / Keep my subscription) and a "Please confirm" banner on the dashboard card.
+- On request, unapproved open deliveries (held, reminded, delayed) are cancelled (chat reminder buttons removed, promised stock released to holds) and next_delivery_date moves past the cancelled date. While pending, the scheduler sends no reminders for that subscription and admin Delay / Skip are refused (`cancel_requested`).
+- The first answer wins, on either channel (subscription row locked, then the request): Yes runs the normal `cancel_subscription`; Keep sets DECLINED and reminders resume (a date missed meanwhile moves to the next cycle). The other channel then says it was already answered; a dashboard answer removes the chat buttons and posts the confirmation there ("Done on the website").
+- A normal cancel by the customer while a request is pending marks it CONFIRMED. The admin can withdraw (WITHDRAWN): the chat buttons go and the customer is told the subscription continues.
+- Customer endpoints: `POST /api/subscriptions/:id/cancel-request/{confirm,decline}`; subscription JSON has `cancel_request` ({request_id, requested_at} while pending, else null). No timeout: a request stays pending until answered or withdrawn.
 
 ## Still open
 - Nothing blocking. Demo prep: rotate the bot token, pick the demo customer, reset test data.

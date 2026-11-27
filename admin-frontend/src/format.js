@@ -49,3 +49,14 @@ export function plural(n, word) {
 export function signed(n) {
   return n > 0 ? `+${n}` : String(n);
 }
+
+/** "2026-11-28" + 2 -> "2026-11-30" (calendar dates, no timezone). */
+export function addDays(isoDate, days) {
+  const [y, m, d] = isoDate.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d + days)).toISOString().slice(0, 10);
+}
+
+/** "every day", "every week", "every 3 days" (same wording as the Telegram message). */
+export function frequencyText(days) {
+  return days === 1 ? "every day" : days === 7 ? "every week" : `every ${days} days`;
+}

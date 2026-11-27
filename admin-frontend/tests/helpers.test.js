@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { buildUrl, DEFAULT_API_URL } from "../src/api/url.js";
-import { formatDate, formatDateTime, plural, signed, timeUntil } from "../src/format.js";
+import { addDays, formatDate, frequencyText, formatDateTime, plural, signed, timeUntil } from "../src/format.js";
 import { parseHash, toHash } from "../src/router.js";
 
 test("buildUrl joins the base, /api/admin and non-empty query values", () => {
@@ -39,4 +39,16 @@ test("small formatters", () => {
   assert.equal(plural(3, "unit"), "3 units");
   assert.equal(signed(5), "+5");
   assert.equal(signed(-3), "-3");
+});
+
+test("addDays crosses months and years", () => {
+  assert.equal(addDays("2026-11-28", 2), "2026-11-30");
+  assert.equal(addDays("2026-11-30", 1), "2026-12-01");
+  assert.equal(addDays("2026-12-31", 2), "2027-01-02");
+});
+
+test("frequencyText matches the Telegram wording", () => {
+  assert.equal(frequencyText(1), "every day");
+  assert.equal(frequencyText(7), "every week");
+  assert.equal(frequencyText(14), "every 14 days");
 });

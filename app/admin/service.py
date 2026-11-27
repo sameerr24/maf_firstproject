@@ -17,12 +17,16 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from app import constants as C
-from app.errors import NotFound, ValidationError
-from app.models import Customer, DeliveryOccurrence, Inventory, InventoryMovement, Product, Subscription
-from app.notifications.sender import mask_phone
-from app.subscriptions import jobs
-from app.subscriptions.service import delivery_date
-from app.timeutil import now_utc
+from app.errors import Conflict, NotFound, ValidationError
+from app.models import (
+    CancellationRequest, Customer, DeliveryOccurrence, Inventory, InventoryMovement, Product, Subscription,
+)
+from app.notifications.sender import (
+    TEMPLATE_OPS_DELAYED, TEMPLATE_OPS_SKIPPED, MessageSender, get_sender, mask_phone,
+)
+from app.subscriptions import cancellation, jobs
+from app.subscriptions.service import advance_cycle, delivery_date
+from app.timeutil import fmt_day, local_date, now_utc
 
 log = logging.getLogger(__name__)
 
@@ -130,6 +134,148 @@ def release_after_restock(engine: Engine, product_id: str) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------- #
+# Delay or skip a delivery (operational reasons)
+# --------------------------------------------------------------------------- #
+# Deliveries nobody has approved yet: held, reminded (awaiting a reply), delayed, or the
+# subscription's upcoming one with no occurrence yet. Approved orders are out of scope.
+OPEN_STATUSES = ("SCHEDULED", "STOCK_HOLD", "NOTIFIED", "DELAYED")
+
+
+def _options(sub: Subscription, used_delay_days: int) -> list[int]:
+    """Same choices and limits as the customer's "Delay N days" (svc.delay_options)."""
+    return [n for n in C.DELAY_OPTIONS_DAYS
+            if used_delay_days + n <= C.MAX_TOTAL_DELAY_DAYS and used_delay_days + n < sub.frequency_days]
+
+
+def upcoming(sub: Subscription, occ: DeliveryOccurrence | None, today: dt.date) -> dict[str, Any] | None:
+    """What the admin can act on for this subscription: its open delivery (or the upcoming
+    one), with the delay choices left. None when there is nothing to delay or skip."""
+    if sub.status != "ACTIVE":
+        return None
+    if occ is not None:
+        when, used = delivery_date(occ), occ.delay_days or 0
+    elif sub.next_delivery_date is not None:
+        when, used = sub.next_delivery_date, 0
+    else:
+        return None
+    if when <= today:                                     # too late: the scheduler settles it
+        return None
+    return {"delivery_date": when.isoformat(), "status": occ.status if occ else "UPCOMING",
+            "delay_options": _options(sub, used)}
+
+
+def _open_delivery(session: Session, subscription_id: Any, today: dt.date
+                   ) -> tuple[Subscription, DeliveryOccurrence | None, dt.date]:
+    """Lock the subscription, then its open delivery (same order as the scheduler and the
+    customer actions). Returns (subscription, open occurrence or None, delivery date)."""
+    sid = _int("subscription_id", subscription_id, 1, 2**63 - 1)
+    sub = session.scalars(select(Subscription).where(Subscription.subscription_id == sid)
+                          .with_for_update().execution_options(populate_existing=True)).one_or_none()
+    if sub is None:
+        raise NotFound("Subscription not found")
+    if sub.status != "ACTIVE":
+        raise Conflict("Only active subscriptions have a delivery to delay or skip", code="not_active")
+    if cancellation.pending_request(session, sid) is not None:
+        raise Conflict("A cancellation request is waiting for the customer; withdraw it first",
+                       code="cancel_requested")
+    occ = session.scalars(select(DeliveryOccurrence)
+                          .where(DeliveryOccurrence.subscription_id == sid,
+                                 DeliveryOccurrence.status.in_(OPEN_STATUSES))
+                          .order_by(DeliveryOccurrence.scheduled_date).limit(1)
+                          .with_for_update().execution_options(populate_existing=True)).one_or_none()
+    if occ is None:
+        d = sub.next_delivery_date
+        if d is None:
+            raise Conflict("This subscription has no upcoming delivery", code="no_upcoming_delivery")
+        if session.scalar(select(DeliveryOccurrence.occurrence_id).where(
+                DeliveryOccurrence.subscription_id == sid, DeliveryOccurrence.scheduled_date == d)):
+            raise Conflict(f"The delivery on {d.isoformat()} has already been settled", code="delivery_finalised")
+    else:
+        d = delivery_date(occ)
+    if d <= today:
+        raise Conflict(f"The delivery on {d.isoformat()} is today or past and can't be changed",
+                       code="delivery_finalised")
+    return sub, occ, d
+
+
+def delay_delivery(session: Session, subscription_id: Any, data: Any, now: dt.datetime | None = None,
+                   sender: MessageSender | None = None) -> dict[str, Any]:
+    """Move the open (or upcoming) delivery by 1-2 days for operational reasons. It becomes
+    DELAYED: the scheduler sends a fresh reminder before the new date, which the customer must
+    approve. The subscription's cycle doesn't move. The customer is told why."""
+    now = now or now_utc()
+    data = _reject_unknown(data, {"days"})
+    days = _int("days", data.get("days"), 1, C.MAX_TOTAL_DELAY_DAYS)
+    sub, occ, old = _open_delivery(session, subscription_id, local_date(now))
+    options = _options(sub, (occ.delay_days or 0) if occ else 0)
+    if days not in options:
+        raise Conflict(f"This delivery can't be delayed by {days} day(s)", code="delay_not_possible",
+                       details={"options": options})
+    was = occ.status if occ else "UPCOMING"
+    if occ is None:
+        occ = DeliveryOccurrence(subscription_id=sub.subscription_id, scheduled_date=old)
+        session.add(occ)
+    occ.delay_days = (occ.delay_days or 0) + days
+    occ.status = "DELAYED"
+    occ.response_deadline = occ.hold_until = None
+    session.flush()
+    new = delivery_date(occ)
+    sent = (sender or get_sender()).send_template(
+        session, customer=sub.customer, template=TEMPLATE_OPS_DELAYED, occurrence=occ,
+        params={"product": sub.product.product_name, "date": fmt_day(old), "new_date": fmt_day(new)})
+    log.info("Admin delayed subscription %s delivery %s -> %s (was %s)", sub.subscription_id, old, new, was)
+    return {"subscription_id": sub.subscription_id, "occurrence_id": occ.occurrence_id, "action": "delayed",
+            "previous_status": was, "delivery_date": old.isoformat(), "new_delivery_date": new.isoformat(),
+            "product_id": sub.product_id, "customer_notified": sent is not None}
+
+
+def skip_delivery(session: Session, subscription_id: Any, data: Any, now: dt.datetime | None = None,
+                  sender: MessageSender | None = None) -> dict[str, Any]:
+    """Skip the open (or upcoming) delivery for operational reasons: SKIPPED / OPERATIONAL, the
+    subscription moves to its next cycle, and the customer is told why. Nothing is charged."""
+    now = now or now_utc()
+    today = local_date(now)
+    _reject_unknown(data, set())
+    sub, occ, when = _open_delivery(session, subscription_id, today)
+    was = occ.status if occ else "UPCOMING"
+    if occ is None:
+        occ = DeliveryOccurrence(subscription_id=sub.subscription_id, scheduled_date=when)
+        session.add(occ)
+    occ.status, occ.skip_reason = "SKIPPED", "OPERATIONAL"
+    occ.response_deadline = occ.hold_until = None
+    session.flush()
+    advance_cycle(session, sub, occ, today)
+    session.flush()
+    sent = (sender or get_sender()).send_template(
+        session, customer=sub.customer, template=TEMPLATE_OPS_SKIPPED, occurrence=occ,
+        params={"product": sub.product.product_name, "date": fmt_day(when),
+                "next_date": fmt_day(sub.next_delivery_date)})
+    log.info("Admin skipped subscription %s delivery %s (was %s)", sub.subscription_id, when, was)
+    return {"subscription_id": sub.subscription_id, "occurrence_id": occ.occurrence_id, "action": "skipped",
+            "previous_status": was, "delivery_date": when.isoformat(),
+            "next_delivery_date": sub.next_delivery_date.isoformat() if sub.next_delivery_date else None,
+            "product_id": sub.product_id, "customer_notified": sent is not None}
+
+
+# --------------------------------------------------------------------------- #
+# Cancellation requests (app/subscriptions/cancellation.py)
+# --------------------------------------------------------------------------- #
+def request_cancellation(session: Session, subscription_id: Any, data: Any, now: dt.datetime | None = None,
+                         sender: MessageSender | None = None) -> dict[str, Any]:
+    """Ask the customer to confirm cancelling (Telegram + dashboard)."""
+    _reject_unknown(data, set())
+    sid = _int("subscription_id", subscription_id, 1, 2**63 - 1)
+    return cancellation.request_cancellation(session, sid, now=now or now_utc(), sender=sender)
+
+
+def withdraw_cancellation(session: Session, subscription_id: Any, data: Any,
+                          now: dt.datetime | None = None) -> dict[str, Any]:
+    _reject_unknown(data, set())
+    sid = _int("subscription_id", subscription_id, 1, 2**63 - 1)
+    return cancellation.withdraw_request(session, sid, now=now or now_utc())
+
+
+# --------------------------------------------------------------------------- #
 # History
 # --------------------------------------------------------------------------- #
 def movements(session: Session, product_id: str, limit: Any = None) -> dict[str, Any]:
@@ -224,6 +370,7 @@ def at_risk(session: Session, now: dt.datetime | None = None) -> dict[str, Any]:
             "customer": _customer_dict(customer), "preferred_slot": sub.preferred_slot,
             "held_since": _iso(occ.created_at), "hold_until": _iso(occ.hold_until),
             "expired": occ.hold_until is None or occ.hold_until <= now,
+            "delay_options": _options(sub, occ.delay_days or 0),
         })
 
     products = []
@@ -320,17 +467,26 @@ def search_subscriptions(session: Session, args: dict[str, Any]) -> dict[str, An
                            .offset((page - 1) * page_size).limit(page_size)).all()
 
     ids = [sub.subscription_id for sub, _, _ in rows]
-    open_occ: dict[int, str] = {}           # most pressing open delivery per subscription
-    priority = {"STOCK_HOLD": 0, "NOTIFIED": 1, "DELAYED": 2}
+    open_occ: dict[int, DeliveryOccurrence] = {}      # the open delivery per subscription (earliest)
     if ids:
-        for sid, st in session.execute(
-                select(DeliveryOccurrence.subscription_id, DeliveryOccurrence.status)
-                .where(DeliveryOccurrence.subscription_id.in_(ids), DeliveryOccurrence.status.in_(priority))):
-            if sid not in open_occ or priority[st] < priority[open_occ[sid]]:
-                open_occ[sid] = st
+        for occ in session.scalars(
+                select(DeliveryOccurrence)
+                .where(DeliveryOccurrence.subscription_id.in_(ids), DeliveryOccurrence.status.in_(OPEN_STATUSES))
+                .order_by(DeliveryOccurrence.scheduled_date.desc())):
+            open_occ[occ.subscription_id] = occ
+    today = local_date(now_utc())
+    requests: dict[int, CancellationRequest] = {}     # latest cancellation request per subscription
+    if ids:
+        for req in session.scalars(select(CancellationRequest).where(CancellationRequest.subscription_id.in_(ids))
+                                   .order_by(CancellationRequest.requested_at, CancellationRequest.id)):
+            requests[req.subscription_id] = req
     items = []
     for sub, customer, product in rows:
         current = product.discount_price
+        occ = open_occ.get(sub.subscription_id)
+        req = requests.get(sub.subscription_id)
+        pending = req is not None and req.status == "PENDING"
+        open_status = occ.status if occ is not None and occ.status != "SCHEDULED" else None
         items.append({
             "subscription_id": sub.subscription_id, "status": sub.status,
             "customer": _customer_dict(customer), "product": _product_dict(product),
@@ -340,7 +496,9 @@ def search_subscriptions(session: Session, args: dict[str, Any]) -> dict[str, An
             "preferred_slot": sub.preferred_slot,
             "unit_price_at_subscription": f"{sub.unit_price_at_subscription:.2f}",
             "current_price": f"{current:.2f}", "price_changed": current != sub.unit_price_at_subscription,
-            "open_delivery": open_occ.get(sub.subscription_id),          # NOTIFIED | STOCK_HOLD | DELAYED | None
-            "at_risk": open_occ.get(sub.subscription_id) == "STOCK_HOLD",
+            "open_delivery": open_status,                 # STOCK_HOLD | NOTIFIED | DELAYED | None
+            "at_risk": open_status == "STOCK_HOLD",
+            "upcoming": None if pending else upcoming(sub, occ, today),   # what Delay / Skip act on
+            "cancel_request": cancellation.request_to_dict(req),          # latest, any status, or None
         })
     return {"items": items, "total": total, "page": page, "page_size": page_size}

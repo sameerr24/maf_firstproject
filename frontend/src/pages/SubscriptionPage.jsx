@@ -2,7 +2,8 @@ import { useCallback, useEffect, useState } from "react";
 import PendingDeliveries from "../components/PendingDeliveries.jsx";
 import ProductImage from "../components/ProductImage.jsx";
 import {
-  cancelSubscription, createSubscription, getDraft, listSubscriptions, skipNextDelivery, updateSubscription,
+  cancelSubscription, confirmCancelRequest, createSubscription, declineCancelRequest, getDraft, listSubscriptions,
+  skipNextDelivery, updateSubscription,
 } from "../api/subscriptions.js";
 import { formatDate, formatPrice, plural } from "../format.js";
 import "../styles/subscriptions.css";
@@ -14,6 +15,7 @@ import "../styles/subscriptions.css";
 // Every delivery is approved by the customer in chat before anything is charged.
 
 const CHAT_BOT_URL = import.meta.env.VITE_CHAT_BOT_URL ?? "https://t.me/Subscribe_Maf_Bot";
+const SUBS_POLL_MS = 15000;           // picks up a cancellation request (or a chat answer) without a reload
 const clamp = (n, [lo, hi]) => Math.min(hi, Math.max(lo, n));
 const toInt = (value) => (/^\d+$/.test(String(value).trim()) ? Number(value) : NaN);
 const inRange = (n, [lo, hi]) => Number.isInteger(n) && n >= lo && n <= hi;
@@ -52,6 +54,20 @@ export default function SubscriptionPage({ product, session, onSessionExpired, o
   }, [loadSubs, loadDraft]);
 
   const refresh = useCallback(() => Promise.all([loadSubs(), loadDraft()]), [loadSubs, loadDraft]);
+
+  // Re-check the list now and then, and when the window gets focus (as PendingDeliveries does),
+  // so a cancellation request from Smart Reorder, or an answer given in Telegram, shows up.
+  useEffect(() => {
+    const timer = setInterval(loadSubs, SUBS_POLL_MS);
+    const onVisible = () => document.visibilityState === "visible" && loadSubs();
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", loadSubs);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", loadSubs);
+    };
+  }, [loadSubs]);
 
   const onCreated = (sub) => {
     setJustCreated(sub);
@@ -344,7 +360,7 @@ function SubscriptionCard({ sub, token, highlight, onChanged, onFail }) {
                   ? (sub.cancelled_at ? `on ${formatLocalDay(sub.cancelled_at)}` : "no more deliveries")
                   : sub.status === "PAUSED"
                     ? (sub.paused_until ? `until ${formatDate(sub.paused_until)}` : "until you resume")
-                    : formatDate(sub.next_delivery_date)}
+                    : sub.cancel_request ? "on hold until you reply" : formatDate(sub.next_delivery_date)}
               </span>
             </li>
             <li><span className="facts__label">Per delivery</span><span>{formatPrice(Number(sub.total_per_delivery))}</span></li>
@@ -370,6 +386,27 @@ function SubscriptionCard({ sub, token, highlight, onChanged, onFail }) {
           </form>
         )}
 
+        {sub.cancel_request && !cancelled && (
+          <div className="sub-confirm" role="alert">
+            <p className="sub-confirm__title">Please confirm</p>
+            <p>
+              Due to operational reasons, we may not be able to continue this subscription. Would you like to
+              cancel it? Until you reply, we won't schedule any deliveries, and you won't be charged for anything
+              you haven't approved.
+            </p>
+            <div className="sub-card__actions">
+              <button type="button" className="btn btn--primary btn--sm" disabled={busy}
+                      onClick={() => run(confirmCancelRequest(token, sub.subscription_id))}>
+                Yes, cancel it
+              </button>
+              <button type="button" className="btn btn--ghost btn--sm" disabled={busy}
+                      onClick={() => run(declineCancelRequest(token, sub.subscription_id),
+                        () => "Thanks, your subscription continues.")}>
+                Keep my subscription
+              </button>
+            </div>
+          </div>
+        )}
         {sub.price_changed && !cancelled && (
           <p className="sub-warn">
             Price changed to {formatPrice(Number(sub.current_subscriber_price))} per pack. You'll confirm it when
@@ -381,7 +418,7 @@ function SubscriptionCard({ sub, token, highlight, onChanged, onFail }) {
 
         {cancelled && <p className="muted">No more deliveries. Past orders stay in your order history.</p>}
 
-        {!editing && !cancelled && (
+        {!editing && !cancelled && !sub.cancel_request && (
           <div className="sub-card__actions">
             <button type="button" className="btn btn--ghost btn--sm" disabled={busy} onClick={() => setEditing(true)}>Edit</button>
             {sub.status === "ACTIVE" && (
