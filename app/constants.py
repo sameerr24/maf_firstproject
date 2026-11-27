@@ -28,6 +28,15 @@ REMINDER_DAYS_BEFORE = 1
 RESPONSE_DEADLINE_LOCAL_TIME = "21:00"
 # ...but always get at least this long to reply (late reminders, demo time travel).
 MIN_RESPONSE_WINDOW_MINUTES = 60
+# A delivery that is short of stock at reminder time is held (STOCK_HOLD, no message) until
+# this local time on the day before delivery, so the admin can restock. Restocking sends the
+# normal reminder; a hold still unresolved at this time becomes OUT_OF_STOCK and the customer
+# is told. 18:00 leaves 3 hours to reply before RESPONSE_DEADLINE_LOCAL_TIME.
+STOCK_HOLD_UNTIL_LOCAL_TIME = "18:00"
+
+# Admin panel inventory status: "low" when stock left after open reminders and held deliveries
+# (on hand - needed) is below this; "short" when it's below zero (some holds can't be released).
+LOW_STOCK_BUFFER = 5
 SCHEDULER_INTERVAL_MINUTES = 5
 
 # "Delay" choices offered in WhatsApp after Skip. A delay moves this delivery only; the

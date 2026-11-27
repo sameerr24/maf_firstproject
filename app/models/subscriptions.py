@@ -15,6 +15,7 @@ from database.models import Customer, Order, Product
 SUBSCRIPTION_STATUSES = ("ACTIVE", "PAUSED", "CANCELLED")
 OCCURRENCE_STATUSES = (
     "SCHEDULED", "NOTIFIED", "APPROVED", "ORDER_PLACED", "SKIPPED", "DELAYED", "OUT_OF_STOCK", "CANCELLED",
+    "STOCK_HOLD",       # short of stock at reminder time; waiting for a restock (migration 004)
 )
 SKIP_REASONS = ("USER_SKIP", "NO_RESPONSE", "OUT_OF_STOCK")
 
@@ -72,6 +73,7 @@ class DeliveryOccurrence(SubscriptionsBase):
     unit_price_at_order: Mapped[Decimal | None] = mapped_column(Numeric)
     notified_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
     response_deadline: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    hold_until: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))   # STOCK_HOLD expiry
     responded_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
     order_id: Mapped[str | None] = mapped_column(String, ForeignKey(Order.__table__.c.order_id))
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
@@ -87,4 +89,6 @@ class DeliveryOccurrence(SubscriptionsBase):
         CheckConstraint("delay_days IS NULL OR delay_days > 0", name="delivery_occurrences_delay_days_check"),
         # Scheduler job B: notified occurrences past their deadline.
         Index("ix_occurrences_pending_deadline", "response_deadline", postgresql_where=text("status = 'NOTIFIED'")),
+        # Held deliveries (scheduler release/expiry, admin at-risk page).
+        Index("ix_occurrences_stock_hold", "hold_until", postgresql_where=text("status = 'STOCK_HOLD'")),
     )

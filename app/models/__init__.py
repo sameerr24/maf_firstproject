@@ -3,6 +3,7 @@ the columns the subscriptions migration added to customers/orders live there too
 
 from app.models.base import SubscriptionsBase  # noqa: F401
 from app.models.inventory import Inventory  # noqa: F401
+from app.models.inventory_movement import MOVEMENT_REASONS, InventoryMovement  # noqa: F401
 from app.models.subscriptions import (  # noqa: F401
     OCCURRENCE_STATUSES, SKIP_REASONS, SUBSCRIPTION_STATUSES, DeliveryOccurrence, Subscription,
 )

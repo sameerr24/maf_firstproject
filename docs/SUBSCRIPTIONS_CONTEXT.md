@@ -37,7 +37,8 @@ Added by Shubham's migration:
 - orders: source ('manual' | 'subscription'), delivery_slot
 - inventory(product_id PK, available_qty CHECK >= 0, updated_at)
 - subscriptions: customer_id, product_id, quantity, frequency_days, unit_price_at_subscription, status ACTIVE|PAUSED|CANCELLED, next_delivery_date, preferred_slot, paused_until, recommended_quantity, recommended_frequency_days, timestamps. Partial unique index `uq_live_subscription` allows one non-cancelled subscription per customer + product.
-- delivery_occurrences: one row per delivery cycle. Status SCHEDULED, NOTIFIED, APPROVED, ORDER_PLACED, SKIPPED, DELAYED, OUT_OF_STOCK, CANCELLED. skip_reason USER_SKIP | NO_RESPONSE | OUT_OF_STOCK, delay_days, delivery_slot, unit_price_at_order, notified_at, response_deadline, responded_at, order_id. UNIQUE(subscription_id, scheduled_date).
+- delivery_occurrences: one row per delivery cycle. Status SCHEDULED, NOTIFIED, APPROVED, ORDER_PLACED, SKIPPED, DELAYED, OUT_OF_STOCK, CANCELLED, STOCK_HOLD (migration 004). skip_reason USER_SKIP | NO_RESPONSE | OUT_OF_STOCK, delay_days, delivery_slot, unit_price_at_order, notified_at, response_deadline, hold_until (004), responded_at, order_id. UNIQUE(subscription_id, scheduled_date).
+- inventory_movements (migration 005): product_id, delta (≠ 0), reason RESTOCK | ADJUST | ORDER, occurrence_id, note, created_at. Every stock change is logged.
 - whatsapp_messages: wa_message_id UNIQUE (for webhook dedupe), occurrence_id, customer_id, direction, message_type, payload jsonb.
 RLS is enabled with no policies. Flask connects with the postgres connection string, so it bypasses RLS. React talks only to Flask, never directly to Supabase.
 
@@ -50,9 +51,10 @@ RLS is enabled with no policies. Flask connects with the postgres connection str
 - Subscription-generated orders go into the same `orders`/`order_items` tables with source='subscription', item_count=1, unit_count=quantity. Order ID format to confirm with Sameer (suggestion: `SUB-<occurrence_id>`).
 
 ## Scheduler (APScheduler, inside Flask)
-- Job A (every few minutes): for ACTIVE subscriptions whose next_delivery_date is within the lead time (~24h) and that have no occurrence yet, create an occurrence. Soft stock check: if out of stock, mark OUT_OF_STOCK, notify, and advance the date. Otherwise send the reminder template, set status NOTIFIED and set response_deadline.
+- Job A (every few minutes): for ACTIVE subscriptions whose next_delivery_date is within the lead time (~24h) and that have no occurrence yet, create an occurrence. Soft stock check, counting stock already promised to reminders awaiting a reply: if short, the delivery is **held** (STOCK_HOLD, no message) until 18:00 the day before delivery, for the admin to restock (see "Stock holds" below). Otherwise send the reminder template, set status NOTIFIED and set response_deadline.
+- Holds (each run, after job B): a hold the stock now covers gets the normal reminder; a hold past hold_until becomes OUT_OF_STOCK, the customer gets the out-of-stock notice and the date advances. `release_holds()` does the same right after an admin restock.
 - Job B: occurrences still NOTIFIED after response_deadline are **auto-skipped** (status SKIPPED, skip_reason NO_RESPONSE). Send the `delivery_skipped_notice` template (it must be a template, because no 24h window is open), then advance next_delivery_date.
-- Approve: in one transaction, `SELECT ... FOR UPDATE` on the inventory row, check and decrement stock, create the order and order_items, and set status ORDER_PLACED. If stock ran out, reply "out of stock".
+- Approve: in one transaction, `SELECT ... FOR UPDATE` on the inventory row, check and decrement stock (logging an ORDER movement), create the order and order_items, and set status ORDER_PLACED. If stock ran out, reply "out of stock".
 - Delay: shift this delivery by N days, computed from the original schedule so the cycle doesn't drift.
 - Demo endpoint `POST /api/dev/run-scheduler?now=<iso>` for "time travel" during the demo.
 
@@ -67,6 +69,8 @@ RLS is enabled with no policies. Flask connects with the postgres connection str
 
 ## API endpoints (Shubham)
 GET /api/products/:id · GET /api/subscriptions/draft?product_id=&rec_id= · GET/POST /api/subscriptions · PATCH/DELETE /api/subscriptions/:id · POST /api/subscriptions/:id/skip · GET /api/subscriptions/deliveries/pending · POST /api/subscriptions/deliveries/:occurrence_id/{approve,skip,delay} · GET /api/orders · GET/POST /webhooks/whatsapp · POST /api/dev/run-scheduler
+
+Admin app (separate, 127.0.0.1:5002, see `docs/ADMIN_PANEL_CONTEXT.md`): GET /api/admin/at-risk · GET /api/admin/inventory · POST /api/admin/inventory/:product_id/{restock,adjust} · GET /api/admin/inventory/:product_id/movements · GET /api/admin/subscriptions
 
 ## Decisions (agreed with Sameer, 2026-11-24)
 
@@ -131,6 +135,13 @@ GET /api/products/:id · GET /api/subscriptions/draft?product_id=&rec_id= · GET
 - Reminder, out-of-stock and auto-skip messages are sent as the product's photo with the message text as its caption and the same buttons. The photo is the website's local copy (`frontend/public/products/<sku>.jpg`), uploaded once per process; later sends reuse Telegram's file_id.
 - No image file, a caption over 1024 characters, or a failed photo send: the plain text message goes out instead, so a reminder is never lost over a picture. A blocked bot is not retried.
 - WhatsApp (product) would do the same with an image header on the template.
+
+**Stock holds instead of immediate out-of-stock** (Shubham, 2026-11-28)
+- At reminder time, a delivery the stock can't cover is held (`STOCK_HOLD`, `hold_until` = 18:00 IST the day before delivery, `STOCK_HOLD_UNTIL_LOCAL_TIME`) and nobody is messaged. It shows on the admin panel's At-risk page.
+- Restocking from the admin panel sends the normal reminder right away (oldest delivery first, each counting the stock promised by the ones before it). 18:00 leaves 3 hours to reply before the 21:00 deadline.
+- Not restocked by 18:00: OUT_OF_STOCK and the out-of-stock notice, exactly as before. A reminder created after 18:00 the day before goes straight to out of stock.
+- Free stock = on hand minus units promised to reminders awaiting a reply. Before, each subscription was checked alone, so with 5 in stock and two orders of 3 both were reminded and the second approval failed; now the second is held.
+- Pause, cancel and "Skip next" clear a hold like any pending delivery. Approval keeps its own hard check, so nothing is charged without stock.
 
 ## Still open
 - Nothing blocking. Demo prep: rotate the bot token, pick the demo customer, reset test data.

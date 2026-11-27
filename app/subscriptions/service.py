@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app import constants as C
 from app.errors import Conflict, NotFound, ValidationError
-from app.models import Customer, DeliveryOccurrence, Inventory, Product, Subscription
+from app.models import Customer, DeliveryOccurrence, Inventory, InventoryMovement, Product, Subscription
 from database.models import Order, OrderItem
 from app.notifications.sender import can_message
 from app.subscriptions import recommendations
@@ -30,7 +30,7 @@ from app.timeutil import LOCAL_TZ, local_date, now_utc, today_local
 from database.models import WEEKDAYS
 
 # Occurrences that haven't reached a final state yet.
-PENDING_OCCURRENCE_STATUSES = ("SCHEDULED", "NOTIFIED", "APPROVED", "DELAYED")
+PENDING_OCCURRENCE_STATUSES = ("SCHEDULED", "NOTIFIED", "APPROVED", "DELAYED", "STOCK_HOLD")
 STATUS_ORDER = {"ACTIVE": 0, "PAUSED": 1, "CANCELLED": 2}
 CENT = Decimal("0.01")
 
@@ -550,6 +550,8 @@ def approve_delivery(session: Session, customer_id: str, occurrence_id: int, slo
     price = product.discount_price
     total = price * qty
     stock.available_qty -= qty
+    session.add(InventoryMovement(product_id=product.product_id, delta=-qty, reason="ORDER",
+                                  occurrence_id=occ.occurrence_id))     # stock history (admin panel)
     placed_at = now.astimezone(LOCAL_TZ).replace(tzinfo=None)    # orders.order_datetime is naive IST
     order_id = f"SUB-{occ.occurrence_id}"
     session.add(Order(order_id=order_id, customer_id=customer_id, order_date=placed_at.date(),
