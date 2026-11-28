@@ -705,6 +705,9 @@ private `.env` file holding the connection string, which is never committed.
    - Change `postgresql://` to `postgresql+psycopg://`.
    - Put in your password, URL-encoding special characters.
    - Add `?sslmode=require`.
+   - Application database engines use a small pool of at most two connections each, with
+     no overflow, so running both Flask and FastAPI does not consume the session pool's
+     full client limit. Keep this cap unless a dedicated database has more connection capacity.
 4. Create the tables and load the data:
    ```bash
    python scripts/create_database.py --check   # connectivity test

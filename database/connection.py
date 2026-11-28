@@ -58,8 +58,14 @@ def safe_url(url: URL | str) -> str:
 
 
 def make_engine(url: URL | str | None = None, *, search_path: str | None = None, **kwargs) -> Engine:
-    """Create an engine. ``search_path`` pins a PostgreSQL schema (used for test isolation)."""
+    """Create an engine with a small per-process pool for the shared Supabase database.
+
+    ``search_path`` pins a PostgreSQL schema (used for test isolation). Callers can
+    override pool sizing through kwargs when a dedicated database needs more capacity.
+    """
     url = make_url(url) if url is not None else get_database_url()
+    kwargs.setdefault("pool_size", 2)
+    kwargs.setdefault("max_overflow", 0)
     connect_args = kwargs.pop("connect_args", {})
     connect_args.setdefault("connect_timeout", 10)
     connect_args.setdefault("application_name", "smart-reorder-recsys")
