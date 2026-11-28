@@ -8,7 +8,7 @@ from app.models import Subscription, WhatsAppMessage
 from app.notifications import sender
 from subscription_db import CHAT, ME, test_env, admin_engine, schema_engine  # noqa: F401
 from app.notifications.telegram_bot import process_update
-from test_telegram import FakeTelegram, remind, subscribe, tap
+from test_telegram import FakeTelegram, at, remind, subscribe, tap
 
 
 @pytest.fixture
@@ -54,7 +54,7 @@ def test_replies_to_a_photo_reminder_work(engine, images):
     sid = subscribe(engine)
     milk_photo(engine, images)
     occ = remind(engine, tg, sid)
-    process_update(engine, tg, tap(CHAT[ME], f"SKIP:{occ}"))
+    process_update(engine, tg, tap(CHAT[ME], f"SKIP:{occ}"), now=at(27, 10))   # fixed clock, before the deadline
     assert f"SKIPCONF:{occ}" in [b[1] for b in tg.last_buttons()]      # same skip menu as for a text reminder
 
 

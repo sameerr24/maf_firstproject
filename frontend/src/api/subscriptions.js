@@ -32,3 +32,11 @@ export const skipDelivery = (token, occurrenceId) =>
 
 export const delayDelivery = (token, occurrenceId, days) =>
   request(`/api/subscriptions/deliveries/${occurrenceId}/delay`, { token, method: "POST", body: { days } });
+
+// The admin asked the customer to confirm cancelling (operational reasons). Same answer as the
+// chat's "Yes, cancel it" / "Keep my subscription" buttons; the first answer on either channel wins.
+export const confirmCancelRequest = (token, id) =>
+  request(`/api/subscriptions/${id}/cancel-request/confirm`, { token, method: "POST" });
+
+export const declineCancelRequest = (token, id) =>
+  request(`/api/subscriptions/${id}/cancel-request/decline`, { token, method: "POST" });

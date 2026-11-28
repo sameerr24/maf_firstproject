@@ -17,11 +17,13 @@ from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, object_session, selectinload
 
 from app import constants as C
 from app.errors import Conflict, NotFound, ValidationError
-from app.models import Customer, DeliveryOccurrence, Inventory, Product, Subscription
+from app.models import (
+    CancellationRequest, Customer, DeliveryOccurrence, Inventory, InventoryMovement, Product, Subscription,
+)
 from database.models import Order, OrderItem
 from app.notifications.sender import can_message
 from app.subscriptions import recommendations
@@ -30,7 +32,7 @@ from app.timeutil import LOCAL_TZ, local_date, now_utc, today_local
 from database.models import WEEKDAYS
 
 # Occurrences that haven't reached a final state yet.
-PENDING_OCCURRENCE_STATUSES = ("SCHEDULED", "NOTIFIED", "APPROVED", "DELAYED")
+PENDING_OCCURRENCE_STATUSES = ("SCHEDULED", "NOTIFIED", "APPROVED", "DELAYED", "STOCK_HOLD")
 STATUS_ORDER = {"ACTIVE": 0, "PAUSED": 1, "CANCELLED": 2}
 CENT = Decimal("0.01")
 
@@ -222,7 +224,14 @@ def subscription_to_dict(sub: Subscription) -> dict[str, Any]:
         "created_at": _iso(sub.created_at),
         "updated_at": _iso(sub.updated_at),
         "cancelled_at": _iso(sub.cancelled_at),
+        "cancel_request": _cancel_request_dict(sub),     # the admin asked to confirm cancelling
     }
+
+
+def _cancel_request_dict(sub: Subscription) -> dict[str, Any] | None:
+    session = object_session(sub)
+    req = _pending_cancel_request(session, sub.subscription_id) if session is not None else None
+    return {"request_id": req.id, "requested_at": _iso(req.requested_at)} if req is not None else None
 
 
 # --------------------------------------------------------------------------- #
@@ -475,11 +484,26 @@ def resume(session: Session, sub: Subscription, today: dt.date) -> None:
     sub.next_delivery_date = next_free_date(session, sub, start, today)
 
 
+def _pending_cancel_request(session: Session, subscription_id: int) -> CancellationRequest | None:
+    return session.scalars(select(CancellationRequest).where(
+        CancellationRequest.subscription_id == subscription_id, CancellationRequest.status == "PENDING")).one_or_none()
+
+
+def _confirm_cancel_request(session: Session, sub: Subscription) -> None:
+    """Cancelling while the admin's cancellation request is pending answers it (app.subscriptions.cancellation)."""
+    req = session.scalars(select(CancellationRequest).where(
+        CancellationRequest.subscription_id == sub.subscription_id, CancellationRequest.status == "PENDING")
+        .with_for_update()).one_or_none()
+    if req is not None:
+        req.status, req.responded_at = "CONFIRMED", now_utc()
+
+
 def cancel_subscription(session: Session, customer_id: str, subscription_id: int) -> dict[str, Any]:
     """Cancel (idempotent). Pending deliveries are cancelled too; past orders are untouched."""
     sub = _get_owned(session, customer_id, subscription_id, lock=True)
     if sub.status != "CANCELLED":
         _cancel_pending(session, sub)
+        _confirm_cancel_request(session, sub)
         sub.status = "CANCELLED"
         sub.cancelled_at = now_utc()
         sub.next_delivery_date = None
@@ -550,6 +574,8 @@ def approve_delivery(session: Session, customer_id: str, occurrence_id: int, slo
     price = product.discount_price
     total = price * qty
     stock.available_qty -= qty
+    session.add(InventoryMovement(product_id=product.product_id, delta=-qty, reason="ORDER",
+                                  occurrence_id=occ.occurrence_id))     # stock history (admin panel)
     placed_at = now.astimezone(LOCAL_TZ).replace(tzinfo=None)    # orders.order_datetime is naive IST
     order_id = f"SUB-{occ.occurrence_id}"
     session.add(Order(order_id=order_id, customer_id=customer_id, order_date=placed_at.date(),

@@ -30,7 +30,7 @@ def create_app(config_name: str | None = None, overrides: dict | None = None) ->
     from app.notifications import bp as notifications_bp
     from app.orders import bp as orders_bp
     from app.products import bp as products_bp
-    from app.subscriptions import bp as subscriptions_bp
+    from app.subscriptions.routes import bp as subscriptions_bp   # importing routes registers them
 
     app.register_blueprint(products_bp, url_prefix="/api/products")
     app.register_blueprint(subscriptions_bp, url_prefix="/api/subscriptions")

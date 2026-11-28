@@ -9,6 +9,8 @@ Reply flows (buttons on the delivery reminder; callback data "<ACTION>:<occurren
   APPROVE  -> slot picker (SLOT:<occ>:<slot index>) -> stock check + order, or out of stock
   SKIP     -> "Skip this delivery" (SKIPCONF) / "Delay N days" (DELAY:<occ>:<n>) / Back
   STOP     -> "Are you sure?" -> STOPCONF cancels the subscription / BACK keeps it
+Cancellation request from the admin (callback data "<ACTION>:<request_id>"):
+  CXL_YES  -> cancels the subscription;  CXL_NO -> keeps it (app/subscriptions/cancellation.py)
 Every action checks that the delivery belongs to the customer linked to this chat.
 
 Updates are processed by process_update(): one transaction per update, deduplicated on
@@ -36,6 +38,7 @@ from app.constants import DELIVERY_SLOTS
 from app.errors import ServiceError, ValidationError
 from app.models import TelegramLink, WhatsAppMessage
 from app.notifications.sender import BUTTON_LABELS
+from app.subscriptions import cancellation
 from app.subscriptions import service as svc
 from app.timeutil import fmt_day, now_utc
 from database.models import Customer
@@ -154,6 +157,15 @@ def _dispatch(session: Session, customer_id: str, chat_id: int, data: str, now) 
         arg = int(rest[0]) if rest else None
     except (ValueError, IndexError):
         raise ValidationError("Sorry, I didn't understand that button.") from None
+
+    if action in ("CXL_YES", "CXL_NO"):                  # the id is a cancellation request, not a delivery
+        r = cancellation.answer(session, customer_id, confirm=action == "CXL_YES", channel="telegram",
+                                request_id=occ_id, now=now)
+        product = _esc(r["subscription"]["product"]["product_name"])
+        if r["outcome"] == "cancelled":
+            return [_send(chat_id, cancellation.cancelled_text(product))]
+        return [_send(chat_id, cancellation.kept_text(product, _next_day(r["subscription"])
+                                                      if r["subscription"]["next_delivery_date"] else None))]
 
     sub, occ = svc.get_owned_delivery(session, customer_id, occ_id)
     product, when = _esc(sub.product.product_name), fmt_day(svc.delivery_date(occ))

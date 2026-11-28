@@ -4,19 +4,27 @@
 2. Auto-skip (job B): occurrences still NOTIFIED after their response_deadline become
    SKIPPED / NO_RESPONSE; the customer gets the delivery_skipped_notice template and the
    subscription moves to its next cycle.
-3. Remind delayed: DELAYED occurrences (customer chose "Delay N days") whose new delivery
+3. Stock holds: STOCK_HOLD occurrences (see below) whose hold_until has passed become
+   OUT_OF_STOCK and the customer gets the out-of-stock notice (next cycle); the others are
+   released, oldest delivery first, if the stock now covers them: they get the normal reminder.
+   release_holds() does the same right after an admin restock.
+4. Remind delayed: DELAYED occurrences (customer chose "Delay N days") whose new delivery
    date is at most REMINDER_DAYS_BEFORE days away get a fresh reminder, since every charge
    must be approved. Same outcomes as below; a new date already reached is skipped.
-4. Remind (job A): ACTIVE subscriptions whose next delivery is at most REMINDER_DAYS_BEFORE
+5. Remind (job A): ACTIVE subscriptions whose next delivery is at most REMINDER_DAYS_BEFORE
    days away and that have no occurrence for that date yet get one:
    - customer no longer reachable on WhatsApp (opted out / phone removed after subscribing):
      SKIPPED / NO_RESPONSE right away, no message, next cycle
-   - stock below the subscription quantity (soft check, no reservation): OUT_OF_STOCK,
+   - stock can't cover it (soft check, no reservation; stock already promised to reminders
+     awaiting a reply is counted): STOCK_HOLD until STOCK_HOLD_UNTIL_LOCAL_TIME the day before
+     delivery, with no message, so the admin can restock. Too late to hold: OUT_OF_STOCK,
      out-of-stock notice, next cycle
    - otherwise NOTIFIED with a response_deadline, and the reminder template with
      APPROVE/SKIP/STOP buttons
    - a delivery date that is already today or past (scheduler was down, time travel):
      no reminder, the subscription moves to its next schedulable cycle
+   Subscriptions with a pending cancellation request (app/subscriptions/cancellation.py) are
+   left alone until the customer answers.
 
 Every subscription/occurrence is handled in its own transaction, so one failure doesn't
 block the rest. A PostgreSQL advisory lock makes concurrent runs (several processes, the
@@ -30,14 +38,15 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
-from typing import Any, Callable
+from contextlib import contextmanager
+from typing import Any, Callable, Iterator
 
 from sqlalchemy import exists, func, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from app import constants as C
-from app.models import DeliveryOccurrence, Inventory, Subscription
+from app.models import CancellationRequest, DeliveryOccurrence, Inventory, Subscription
 from app.notifications.sender import (
     TEMPLATE_OUT_OF_STOCK, TEMPLATE_REMINDER, TEMPLATE_SKIPPED, MessageSender, can_message, get_sender,
 )
@@ -58,6 +67,30 @@ def response_deadline(delivery_date: dt.date, now: dt.datetime) -> dt.datetime:
     at = dt.time.fromisoformat(C.RESPONSE_DEADLINE_LOCAL_TIME)
     deadline = dt.datetime.combine(delivery_date - dt.timedelta(days=1), at, tzinfo=LOCAL_TZ)
     return max(deadline, now + dt.timedelta(minutes=C.MIN_RESPONSE_WINDOW_MINUTES)).astimezone(dt.timezone.utc)
+
+
+def hold_until(delivery_date: dt.date) -> dt.datetime:
+    """STOCK_HOLD_UNTIL_LOCAL_TIME on the day before delivery (UTC)."""
+    at = dt.time.fromisoformat(C.STOCK_HOLD_UNTIL_LOCAL_TIME)
+    return dt.datetime.combine(delivery_date - dt.timedelta(days=1), at, tzinfo=LOCAL_TZ).astimezone(dt.timezone.utc)
+
+
+def promised_qty(s: Session, product_id: str, exclude_occurrence: int | None = None) -> int:
+    """Units of this product promised to reminders awaiting a reply (they take stock if approved)."""
+    q = (select(func.coalesce(func.sum(Subscription.quantity), 0))
+         .join(DeliveryOccurrence, DeliveryOccurrence.subscription_id == Subscription.subscription_id)
+         .where(Subscription.product_id == product_id, Subscription.status == "ACTIVE",
+                DeliveryOccurrence.status == "NOTIFIED"))
+    if exclude_occurrence is not None:
+        q = q.where(DeliveryOccurrence.occurrence_id != exclude_occurrence)
+    return int(s.scalar(q))
+
+
+def stock_covers(s: Session, sub: Subscription, occ: DeliveryOccurrence) -> bool:
+    """Soft check: free stock (on hand minus already promised) covers this delivery."""
+    stock = s.get(Inventory, sub.product_id)
+    on_hand = stock.available_qty if stock is not None else 0
+    return on_hand - promised_qty(s, sub.product_id, occ.occurrence_id) >= sub.quantity
 
 
 _fmt_date = fmt_day                          # "Sat, 28 Nov"
@@ -104,10 +137,9 @@ _advance = advance_cycle
 def _settle_or_remind(s: Session, sub: Subscription, occ: DeliveryOccurrence, now: dt.datetime,
                       today: dt.date, sender: MessageSender) -> str:
     """Decide a due delivery (new or delayed, already flushed): skip if the customer can't be
-    asked on WhatsApp, mark out of stock (soft check, no reservation), or send the reminder."""
+    asked on WhatsApp, hold it if the stock can't cover it (out of stock if it's too late to
+    hold), or send the reminder."""
     d = delivery_date(occ)
-    params = {"product": sub.product.product_name, "quantity": sub.quantity, "date": _fmt_date(d)}
-
     if not can_message(s, sub.customer):                  # can't ask, so it can't be approved
         occ.status, occ.skip_reason = "SKIPPED", "NO_RESPONSE"
         _advance(s, sub, occ, today)
@@ -115,20 +147,39 @@ def _settle_or_remind(s: Session, sub: Subscription, occ: DeliveryOccurrence, no
                     sub.subscription_id, d, sub.customer_id)
         return "no_whatsapp"
 
-    stock = s.get(Inventory, sub.product_id)
-    if stock is None or stock.available_qty < sub.quantity:
-        occ.status, occ.skip_reason, occ.notified_at = "OUT_OF_STOCK", "OUT_OF_STOCK", now
-        occ.response_deadline = None
-        _advance(s, sub, occ, today)
-        sender.send_template(s, customer=sub.customer, template=TEMPLATE_OUT_OF_STOCK, occurrence=occ,
-                             params={**params, "next_date": _fmt_date(sub.next_delivery_date)})
-        return "out_of_stock"
+    if not stock_covers(s, sub, occ):
+        until = hold_until(d)
+        if until <= now:                                  # too late to wait for a restock
+            return _out_of_stock(s, sub, occ, now, today, sender)
+        occ.status, occ.hold_until = "STOCK_HOLD", until
+        occ.notified_at = occ.response_deadline = None
+        log.info("Scheduler: subscription %s delivery %s held for stock until %s", sub.subscription_id, d, until)
+        return "held"
 
+    return _send_reminder(s, sub, occ, now, sender)
+
+
+def _out_of_stock(s: Session, sub: Subscription, occ: DeliveryOccurrence, now: dt.datetime,
+                  today: dt.date, sender: MessageSender) -> str:
+    occ.status, occ.skip_reason, occ.notified_at = "OUT_OF_STOCK", "OUT_OF_STOCK", now
+    occ.response_deadline = None
+    _advance(s, sub, occ, today)
+    sender.send_template(s, customer=sub.customer, template=TEMPLATE_OUT_OF_STOCK, occurrence=occ,
+                         params={"product": sub.product.product_name, "quantity": sub.quantity,
+                                 "date": _fmt_date(delivery_date(occ)),
+                                 "next_date": _fmt_date(sub.next_delivery_date)})
+    return "out_of_stock"
+
+
+def _send_reminder(s: Session, sub: Subscription, occ: DeliveryOccurrence, now: dt.datetime,
+                   sender: MessageSender) -> str:
+    d = delivery_date(occ)
     occ.status, occ.notified_at = "NOTIFIED", now
     occ.response_deadline = response_deadline(d, now)
     oid = occ.occurrence_id
     sender.send_template(s, customer=sub.customer, template=TEMPLATE_REMINDER, occurrence=occ,
-                         params={**params, "price": _reminder_price(sub),
+                         params={"product": sub.product.product_name, "quantity": sub.quantity,
+                                 "date": _fmt_date(d), "price": _reminder_price(sub),
                                  "reply_by": _fmt_reply_by(occ.response_deadline)},
                          buttons=[f"APPROVE:{oid}", f"SKIP:{oid}", f"STOP:{oid}"])
     return "reminded"
@@ -186,6 +237,33 @@ def _auto_skip(engine: Engine, now: dt.datetime, today: dt.date, sender: Message
     _each(engine, [tuple(r) for r in rows], skip_unanswered, summary, record=lambda row: row[1])
 
 
+def _process_holds(engine: Engine, now: dt.datetime, today: dt.date, sender: MessageSender, summary: dict,
+                   product_id: str | None = None) -> None:
+    """Held deliveries, oldest delivery first: past hold_until -> out of stock (customer told);
+    stock now covers it -> the normal reminder ("released"); otherwise it stays held. One
+    transaction each, so every release counts the stock promised by the ones before it."""
+    q = select(DeliveryOccurrence).where(DeliveryOccurrence.status == "STOCK_HOLD")
+    if product_id is not None:
+        q = q.join(Subscription).where(Subscription.product_id == product_id)
+    with Session(engine) as s:
+        rows = [(o.occurrence_id, o.subscription_id) for o in
+                sorted(s.scalars(q), key=lambda o: (delivery_date(o), o.subscription_id))]
+
+    def settle_hold(s: Session, row) -> str | None:
+        occ_id, sub_id = row
+        sub, occ = _lock_sub_and_occ(s, sub_id, occ_id, DeliveryOccurrence.status == "STOCK_HOLD")
+        if occ is None or sub.status != "ACTIVE":         # pause / cancel already cleared it
+            return None
+        if occ.hold_until is None or occ.hold_until <= now:
+            return _out_of_stock(s, sub, occ, now, today, sender)
+        if not stock_covers(s, sub, occ):
+            return None                                   # still waiting for a restock
+        outcome = _settle_or_remind(s, sub, occ, now, today, sender)
+        return "released" if outcome == "reminded" else outcome
+
+    _each(engine, rows, settle_hold, summary, record=lambda row: row[1])
+
+
 def _remind_delayed(engine: Engine, now: dt.datetime, today: dt.date, sender: MessageSender,
                     summary: dict) -> None:
     horizon = today + dt.timedelta(days=C.REMINDER_DAYS_BEFORE)
@@ -212,9 +290,12 @@ def _remind(engine: Engine, now: dt.datetime, today: dt.date, sender: MessageSen
     horizon = today + dt.timedelta(days=C.REMINDER_DAYS_BEFORE)
     has_occurrence = exists().where(DeliveryOccurrence.subscription_id == Subscription.subscription_id,
                                     DeliveryOccurrence.scheduled_date == Subscription.next_delivery_date)
+    cancel_pending = exists().where(CancellationRequest.subscription_id == Subscription.subscription_id,
+                                    CancellationRequest.status == "PENDING")
     with Session(engine) as s:
         ids = s.scalars(select(Subscription.subscription_id).where(
-            Subscription.status == "ACTIVE", Subscription.next_delivery_date <= horizon, ~has_occurrence)
+            Subscription.status == "ACTIVE", Subscription.next_delivery_date <= horizon, ~has_occurrence,
+            ~cancel_pending)
             .order_by(Subscription.next_delivery_date, Subscription.subscription_id)).all()
 
     def remind_subscription(s: Session, sid: int) -> str | None:
@@ -227,6 +308,9 @@ def _remind(engine: Engine, now: dt.datetime, today: dt.date, sender: MessageSen
         if s.scalar(select(DeliveryOccurrence.occurrence_id).where(
                 DeliveryOccurrence.subscription_id == sid, DeliveryOccurrence.scheduled_date == d)):
             return None                                         # already handled; waiting for a reply
+        if s.scalar(select(CancellationRequest.id).where(
+                CancellationRequest.subscription_id == sid, CancellationRequest.status == "PENDING")):
+            return None                                         # waiting for the customer to confirm cancelling
 
         if d <= today:                                          # too late to ask: move to the next cycle
             sub.next_delivery_date = next_free_date(s, sub, d, today)
@@ -245,34 +329,71 @@ def _remind(engine: Engine, now: dt.datetime, today: dt.date, sender: MessageSen
 # --------------------------------------------------------------------------- #
 # Entry point
 # --------------------------------------------------------------------------- #
+def _new_summary(now: dt.datetime, today: dt.date) -> dict[str, Any]:
+    return {"now": now.isoformat(), "today": today.isoformat(), "status": "ok",
+            "resumed": [], "auto_skipped": [], "released": [], "held": [], "reminded": [], "out_of_stock": [],
+            "missed": [], "no_whatsapp": [], "errors": []}
+
+
+@contextmanager
+def _scheduler_lock(engine: Engine, wait: bool) -> Iterator[bool]:
+    """The advisory lock that serialises scheduler runs and hold releases. wait=False: yield
+    False at once if another run holds it."""
+    with engine.connect() as lock_conn:
+        if wait:
+            lock_conn.execute(select(func.pg_advisory_lock(ADVISORY_LOCK_KEY)))
+            got_lock = True
+        else:
+            got_lock = bool(lock_conn.scalar(select(func.pg_try_advisory_lock(ADVISORY_LOCK_KEY))))
+        lock_conn.commit()                       # session-level lock outlives the transaction
+        try:
+            yield got_lock
+        finally:
+            if got_lock:
+                lock_conn.scalar(select(func.pg_advisory_unlock(ADVISORY_LOCK_KEY)))
+                lock_conn.commit()
+
+
+def _finish(summary: dict[str, Any], label: str) -> dict[str, Any]:
+    if summary["errors"]:
+        summary["status"] = "partial"
+    counts = {k: len(v) for k, v in summary.items() if isinstance(v, list)}
+    log.info("%s as of %s: %s", label, summary["now"], counts)
+    return summary
+
+
+def _start(now: dt.datetime | None, sender: MessageSender | None):
+    now = now or now_utc()
+    if now.tzinfo is None:
+        raise ValueError("now must be timezone-aware")
+    return now, sender or get_sender(), local_date(now)
+
+
 def run_scheduler(engine: Engine, now: dt.datetime | None = None,
                   sender: MessageSender | None = None) -> dict[str, Any]:
     """Run all jobs once as of `now` (aware; default: the real clock). Returns a summary whose
     lists hold subscription ids."""
-    now = now or now_utc()
-    if now.tzinfo is None:
-        raise ValueError("now must be timezone-aware")
-    sender = sender or get_sender()
-    today = local_date(now)
-    summary: dict[str, Any] = {"now": now.isoformat(), "today": today.isoformat(), "status": "ok",
-                               "resumed": [], "auto_skipped": [], "reminded": [], "out_of_stock": [],
-                               "missed": [], "no_whatsapp": [], "errors": []}
-    with engine.connect() as lock_conn:
-        got_lock = lock_conn.scalar(select(func.pg_try_advisory_lock(ADVISORY_LOCK_KEY)))
-        lock_conn.commit()                       # session-level lock outlives the transaction
+    now, sender, today = _start(now, sender)
+    summary = _new_summary(now, today)
+    with _scheduler_lock(engine, wait=False) as got_lock:
         if not got_lock:
             summary["status"] = "busy"
             return summary
-        try:
-            _resume_due(engine, today, summary)
-            _auto_skip(engine, now, today, sender, summary)
-            _remind_delayed(engine, now, today, sender, summary)
-            _remind(engine, now, today, sender, summary)
-        finally:
-            lock_conn.scalar(select(func.pg_advisory_unlock(ADVISORY_LOCK_KEY)))
-            lock_conn.commit()
-    if summary["errors"]:
-        summary["status"] = "partial"
-    counts = {k: len(v) for k, v in summary.items() if isinstance(v, list)}
-    log.info("Scheduler run as of %s: %s", now.isoformat(), counts)
-    return summary
+        _resume_due(engine, today, summary)
+        _auto_skip(engine, now, today, sender, summary)
+        _process_holds(engine, now, today, sender, summary)
+        _remind_delayed(engine, now, today, sender, summary)
+        _remind(engine, now, today, sender, summary)
+    return _finish(summary, "Scheduler run")
+
+
+def release_holds(engine: Engine, product_id: str | None = None, now: dt.datetime | None = None,
+                  sender: MessageSender | None = None) -> dict[str, Any]:
+    """Settle held deliveries right away (after a restock), for one product or all: release the
+    ones the stock now covers (reminder sent), expire the ones past hold_until. Waits for a
+    running scheduler pass instead of skipping, so a restock is never ignored."""
+    now, sender, today = _start(now, sender)
+    summary = _new_summary(now, today)
+    with _scheduler_lock(engine, wait=True):
+        _process_holds(engine, now, today, sender, summary, product_id=product_id)
+    return _finish(summary, "Hold release")

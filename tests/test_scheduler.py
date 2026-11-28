@@ -108,8 +108,16 @@ def test_price_change_is_flagged_in_reminder(engine):
 
 @pytest.mark.parametrize("product,qty", [(SOAP, 1), (MILK, 6)])    # SOAP stock 0; MILK stock 5
 def test_out_of_stock(engine, product, qty):
+    """Short at reminder time: held without a message; still short at 18:00 the day before
+    (STOCK_HOLD_UNTIL_LOCAL_TIME): out of stock, customer told, next cycle."""
     sid = subscribe(engine, product=product, quantity=qty, frequency_days=3)
     r = run(engine, at(27, 9))
+    assert r["held"] == [sid] and r["out_of_stock"] == []
+    _, next_date, occs, msgs = state(engine, sid)
+    assert occs == {dt.date(2026, 11, 28): ("STOCK_HOLD", None)} and msgs == []
+    assert next_date == dt.date(2026, 11, 28)                       # cycle not settled while held
+    assert run(engine, at(27, 17, 59))["out_of_stock"] == []        # still held
+    r = run(engine, at(27, 18))
     assert r["out_of_stock"] == [sid]
     status, next_date, occs, msgs = state(engine, sid)
     assert occs == {dt.date(2026, 11, 28): ("OUT_OF_STOCK", "OUT_OF_STOCK")}
@@ -301,7 +309,8 @@ def test_delayed_delivery_out_of_stock_at_new_reminder(engine):
     with Session(engine) as s:
         s.get(Inventory, MILK).available_qty = 1
         s.commit()
-    r = run(engine, at(29, 9))
+    assert run(engine, at(29, 9))["held"] == [sid]                     # new date 30 Nov: held until 29 Nov 18:00
+    r = run(engine, at(29, 18))
     assert r["out_of_stock"] == [sid]
     _, next_date, occs, msgs = state(engine, sid)
     assert occs == {dt.date(2026, 11, 28): ("OUT_OF_STOCK", "OUT_OF_STOCK")} and next_date == dt.date(2026, 12, 5)

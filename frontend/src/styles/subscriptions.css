@@ -67,6 +67,10 @@
 
 .sub-warn { color: var(--warning); font-size: .85rem; font-weight: 600; }
 .sub-ok { color: var(--brand-700); font-size: .85rem; font-weight: 650; }
+/* the admin asked the customer to confirm cancelling (cancel_request) */
+.sub-confirm { display: grid; gap: .5rem; padding: .8rem .9rem; border-radius: var(--radius-sm);
+  background: var(--warning-bg); border-left: 4px solid var(--warning); font-size: .9rem; }
+.sub-confirm__title { font-weight: 700; color: var(--warning); }
 
 /* ---------- delivery reminders waiting for a reply (PendingDeliveries.jsx) ---------- */
 .pending { display: grid; gap: .9rem; }
