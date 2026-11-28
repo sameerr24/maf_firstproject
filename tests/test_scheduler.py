@@ -74,6 +74,25 @@ def test_reminder_the_day_before(engine):
     assert run(engine, at(27, 9, 5))["reminded"] == [] and len(state(engine, sid)[3]) == 1
 
 
+def test_reminder_is_committed_before_sender_can_deliver_it(engine):
+    sid = subscribe(engine)
+    observed = []
+
+    class ObservingSender:
+        def send_template(self, session, *, occurrence, **kwargs):
+            with Session(engine) as observer:
+                row = observer.get(DeliveryOccurrence, occurrence.occurrence_id)
+                _, found = svc.get_owned_delivery(observer, ME, occurrence.occurrence_id)
+                pending = svc.pending_deliveries(observer, ME, now=at(27, 10))
+                observed.append((row.status if row is not None else None, found.status, len(pending)))
+            return True
+
+    result = jobs.run_scheduler(engine, now=at(27, 9), sender=ObservingSender())
+
+    assert result["reminded"] == [sid]
+    assert observed == [("NOTIFIED", "NOTIFIED", 1)]
+
+
 def test_late_reminder_still_gets_a_response_window(engine):
     subscribe(engine)
     run(engine, at(27, 20, 50))
@@ -196,10 +215,14 @@ def test_one_failure_does_not_stop_the_run(engine):
         def send_template(self, session, *, customer, **kw):
             if customer.customer_id == OTHER:
                 raise RuntimeError("boom")
+            return True
 
     r = jobs.run_scheduler(engine, now=at(29, 9), sender=FailingForOther())
     assert r["status"] == "partial" and r["reminded"] == [good] and "boom" in r["errors"][0]
-    assert state(engine, bad)[2] == {}             # rolled back; retried on the next run
+    assert state(engine, bad)[2] == {dt.date(2026, 11, 30): ("SCHEDULED", None)}
+    retried = jobs.run_scheduler(engine, now=at(29, 9))
+    assert retried["reminded"] == [bad]
+    assert state(engine, bad)[2] == {dt.date(2026, 11, 30): ("NOTIFIED", None)}
 
 
 def test_now_must_be_aware(engine):

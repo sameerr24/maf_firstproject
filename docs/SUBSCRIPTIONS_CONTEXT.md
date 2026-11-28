@@ -55,6 +55,7 @@ RLS is enabled with no policies. Flask connects with the postgres connection str
 - Approve: in one transaction, `SELECT ... FOR UPDATE` on the inventory row, check and decrement stock, create the order and order_items, and set status ORDER_PLACED. If stock ran out, reply "out of stock".
 - Delay: shift this delivery by N days, computed from the original schedule so the cycle doesn't drift.
 - Demo endpoint `POST /api/dev/run-scheduler?now=<iso>` for "time travel" during the demo.
+- Scheduler delivery status/deadline is committed before the Telegram notification is sent. This lets the web pending-delivery view and an immediate Telegram button callback find the occurrence even if the scheduler HTTP request is still waiting for Telegram; the endpoint returns its JSON summary after sending finishes.
 
 ## WhatsApp (Meta Cloud API, free test number, up to 5 recipient numbers)
 - Business-initiated messages must be **approved templates**. When the user taps a button, a 24h customer service window opens, and follow-ups can then be free-form interactive messages.

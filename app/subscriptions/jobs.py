@@ -19,8 +19,10 @@
      no reminder, the subscription moves to its next schedulable cycle
 
 Every subscription/occurrence is handled in its own transaction, so one failure doesn't
-block the rest. A PostgreSQL advisory lock makes concurrent runs (several processes, the
-dev endpoint) skip instead of doubling up; rows are also locked with SKIP LOCKED.
+block the rest. Notification state is committed before the external send, so a fast Telegram
+button tap and the web pending-delivery view can both see the occurrence. A PostgreSQL
+advisory lock makes concurrent runs skip instead of doubling up; rows are also locked with
+SKIP LOCKED.
 
 `now` can be any moment (the dev endpoint passes it for demo time travel); all business
 dates derive from it, nothing reads the real clock.
@@ -34,7 +36,7 @@ from typing import Any, Callable
 
 from sqlalchemy import exists, func, select
 from sqlalchemy.engine import Engine
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app import constants as C
 from app.models import DeliveryOccurrence, Inventory, Subscription
@@ -85,13 +87,16 @@ def _reminder_price(sub: Subscription) -> str:
 
 
 def _each(engine: Engine, items: list, fn: Callable[[Session, Any], str | None], summary: dict,
-          record: Callable[[Any], Any] = lambda item: item) -> None:
+          record: Callable[[Any], Any] = lambda item: item,
+          after_commit: Callable[[Any, str], None] | None = None) -> None:
     """Run fn(session, item) for every item in its own transaction; record outcomes and errors.
     Summary lists hold subscription ids (`record` maps an item to one)."""
     for item in items:
         try:
             with Session(engine, expire_on_commit=False) as s, s.begin():
                 outcome = fn(s, item)
+            if outcome and after_commit is not None:
+                after_commit(item, outcome)
         except Exception as e:  # keep going; one bad row must not stop the run
             log.exception("Scheduler: %s %s failed", fn.__name__, item)
             summary["errors"].append(f"{fn.__name__} {item}: {e}")
@@ -104,11 +109,10 @@ _advance = advance_cycle
 
 
 def _settle_or_remind(s: Session, sub: Subscription, occ: DeliveryOccurrence, now: dt.datetime,
-                      today: dt.date, sender: MessageSender) -> str:
-    """Decide a due delivery (new or delayed, already flushed): skip if the customer can't be
-    asked on WhatsApp, mark out of stock (soft check, no reservation), or send the reminder."""
+                      today: dt.date) -> str:
+    """Decide a due delivery: skip if the customer can't be messaged, mark out of stock,
+    or prepare a reminder. The caller commits before sending."""
     d = delivery_date(occ)
-    params = {"product": sub.product.product_name, "quantity": sub.quantity, "date": _fmt_date(d)}
 
     if not can_message(s, sub.customer):                  # can't ask, so it can't be approved
         occ.status, occ.skip_reason = "SKIPPED", "NO_RESPONSE"
@@ -122,18 +126,90 @@ def _settle_or_remind(s: Session, sub: Subscription, occ: DeliveryOccurrence, no
         occ.status, occ.skip_reason, occ.notified_at = "OUT_OF_STOCK", "OUT_OF_STOCK", now
         occ.response_deadline = None
         _advance(s, sub, occ, today)
-        sender.send_template(s, customer=sub.customer, template=TEMPLATE_OUT_OF_STOCK, occurrence=occ,
-                             params={**params, "next_date": _fmt_date(sub.next_delivery_date)})
         return "out_of_stock"
 
     occ.status, occ.notified_at = "NOTIFIED", now
     occ.response_deadline = response_deadline(d, now)
-    oid = occ.occurrence_id
-    sender.send_template(s, customer=sub.customer, template=TEMPLATE_REMINDER, occurrence=occ,
-                         params={**params, "price": _reminder_price(sub),
-                                 "reply_by": _fmt_reply_by(occ.response_deadline)},
-                         buttons=[f"APPROVE:{oid}", f"SKIP:{oid}", f"STOP:{oid}"])
     return "reminded"
+
+
+def _send_occurrence_notice(engine: Engine, sender: MessageSender, occurrence_id: int,
+                            template: str) -> None:
+    """Deliver a scheduler notification only after its occurrence state is committed.
+
+    Telegram can deliver inline buttons immediately. Committing first ensures both the web
+    pending-delivery view and a fast Telegram callback can see the occurrence.
+    """
+    try:
+        with Session(engine, expire_on_commit=False) as s, s.begin():
+            occ = s.scalars(
+                select(DeliveryOccurrence).where(DeliveryOccurrence.occurrence_id == occurrence_id)
+                .options(
+                    selectinload(DeliveryOccurrence.subscription).selectinload(Subscription.product),
+                    selectinload(DeliveryOccurrence.subscription).selectinload(Subscription.customer),
+                )
+            ).one_or_none()
+            if occ is None:
+                raise RuntimeError(f"Delivery occurrence {occurrence_id} disappeared before notification")
+            sub = occ.subscription
+
+            if template == TEMPLATE_REMINDER:
+                if occ.status != "NOTIFIED" or occ.response_deadline is None:
+                    return
+                d = delivery_date(occ)
+                params = {"product": sub.product.product_name, "quantity": sub.quantity,
+                          "date": _fmt_date(d), "price": _reminder_price(sub),
+                          "reply_by": _fmt_reply_by(occ.response_deadline)}
+                buttons = [f"APPROVE:{occurrence_id}", f"SKIP:{occurrence_id}", f"STOP:{occurrence_id}"]
+            elif template == TEMPLATE_SKIPPED:
+                if occ.status != "SKIPPED" or occ.skip_reason != "NO_RESPONSE" or sub.next_delivery_date is None:
+                    return
+                params = {"product": sub.product.product_name, "date": _fmt_date(delivery_date(occ)),
+                          "next_date": _fmt_date(sub.next_delivery_date)}
+                buttons = None
+            elif template == TEMPLATE_OUT_OF_STOCK:
+                if occ.status != "OUT_OF_STOCK" or sub.next_delivery_date is None:
+                    return
+                params = {"product": sub.product.product_name, "quantity": sub.quantity,
+                          "date": _fmt_date(delivery_date(occ)), "next_date": _fmt_date(sub.next_delivery_date)}
+                buttons = None
+            else:
+                raise ValueError(f"Unsupported scheduler notification: {template}")
+
+            sent = sender.send_template(s, customer=sub.customer, template=template, occurrence=occ,
+                                        params=params, buttons=buttons)
+            if sent is None and template == TEMPLATE_REMINDER:
+                occ.status = "DELAYED" if occ.delay_days else "SCHEDULED"
+                occ.notified_at = None
+                occ.response_deadline = None
+        if sent is None:
+            raise RuntimeError(f"Notification sender did not send {template} for occurrence {occurrence_id}")
+    except Exception:
+        if template == TEMPLATE_REMINDER:
+            with Session(engine) as s, s.begin():
+                occ = s.scalars(select(DeliveryOccurrence).where(
+                    DeliveryOccurrence.occurrence_id == occurrence_id,
+                    DeliveryOccurrence.status == "NOTIFIED",
+                ).with_for_update()).one_or_none()
+                if occ is not None:
+                    occ.status = "DELAYED" if occ.delay_days else "SCHEDULED"
+                    occ.notified_at = None
+                    occ.response_deadline = None
+        raise
+
+
+def _notify_delayed(engine: Engine, sender: MessageSender, row, outcome: str) -> None:
+    if outcome == "reminded":
+        _send_occurrence_notice(engine, sender, row[0], TEMPLATE_REMINDER)
+    elif outcome == "out_of_stock":
+        _send_occurrence_notice(engine, sender, row[0], TEMPLATE_OUT_OF_STOCK)
+
+
+def _notify_occurrence(engine: Engine, sender: MessageSender, occurrence_id: int, outcome: str) -> None:
+    if outcome == "reminded":
+        _send_occurrence_notice(engine, sender, occurrence_id, TEMPLATE_REMINDER)
+    elif outcome == "out_of_stock":
+        _send_occurrence_notice(engine, sender, occurrence_id, TEMPLATE_OUT_OF_STOCK)
 
 
 def _lock_sub_and_occ(s: Session, sub_id: int, occ_id: int, *conditions):
@@ -178,14 +254,14 @@ def _auto_skip(engine: Engine, now: dt.datetime, today: dt.date, sender: Message
             return None
         occ.status, occ.skip_reason = "SKIPPED", "NO_RESPONSE"
         _advance(s, sub, occ, today)
-        if sub.status == "ACTIVE" and sub.next_delivery_date:   # always true today (pause/cancel clear pending)
-            sender.send_template(s, customer=sub.customer, template=TEMPLATE_SKIPPED, occurrence=occ,
-                                 params={"product": sub.product.product_name,
-                                         "date": _fmt_date(delivery_date(occ)),
-                                         "next_date": _fmt_date(sub.next_delivery_date)})
         return "auto_skipped"
 
-    _each(engine, [tuple(r) for r in rows], skip_unanswered, summary, record=lambda row: row[1])
+    def notify(row, outcome):
+        if outcome == "auto_skipped":
+            _send_occurrence_notice(engine, sender, row[0], TEMPLATE_SKIPPED)
+
+    _each(engine, [tuple(r) for r in rows], skip_unanswered, summary, record=lambda row: row[1],
+          after_commit=notify)
 
 
 def _remind_delayed(engine: Engine, now: dt.datetime, today: dt.date, sender: MessageSender,
@@ -205,18 +281,23 @@ def _remind_delayed(engine: Engine, now: dt.datetime, today: dt.date, sender: Me
             occ.status, occ.skip_reason = "SKIPPED", "NO_RESPONSE"
             _advance(s, sub, occ, today)
             return "missed"
-        return _settle_or_remind(s, sub, occ, now, today, sender)
+        return _settle_or_remind(s, sub, occ, now, today)
 
-    _each(engine, rows, remind_delayed, summary, record=lambda row: row[1])
+    _each(engine, rows, remind_delayed, summary, record=lambda row: row[1],
+          after_commit=lambda row, outcome: _notify_delayed(engine, sender, row, outcome))
 
 
 def _remind(engine: Engine, now: dt.datetime, today: dt.date, sender: MessageSender, summary: dict) -> None:
     horizon = today + dt.timedelta(days=C.REMINDER_DAYS_BEFORE)
-    has_occurrence = exists().where(DeliveryOccurrence.subscription_id == Subscription.subscription_id,
-                                    DeliveryOccurrence.scheduled_date == Subscription.next_delivery_date)
+    has_non_retryable_occurrence = exists().where(
+        DeliveryOccurrence.subscription_id == Subscription.subscription_id,
+        DeliveryOccurrence.scheduled_date == Subscription.next_delivery_date,
+        DeliveryOccurrence.status != "SCHEDULED",
+    )
     with Session(engine) as s:
         ids = s.scalars(select(Subscription.subscription_id).where(
-            Subscription.status == "ACTIVE", Subscription.next_delivery_date <= horizon, ~has_occurrence)
+            Subscription.status == "ACTIVE", Subscription.next_delivery_date <= horizon,
+            ~has_non_retryable_occurrence)
             .order_by(Subscription.next_delivery_date, Subscription.subscription_id)).all()
 
     def remind_subscription(s: Session, sid: int) -> str | None:
@@ -226,8 +307,10 @@ def _remind(engine: Engine, now: dt.datetime, today: dt.date, sender: MessageSen
         if sub is None or sub.next_delivery_date is None or sub.next_delivery_date > horizon:
             return None
         d = sub.next_delivery_date
-        if s.scalar(select(DeliveryOccurrence.occurrence_id).where(
-                DeliveryOccurrence.subscription_id == sid, DeliveryOccurrence.scheduled_date == d)):
+        occ = s.scalars(select(DeliveryOccurrence).where(
+            DeliveryOccurrence.subscription_id == sid, DeliveryOccurrence.scheduled_date == d)
+            .with_for_update()).one_or_none()
+        if occ is not None and occ.status != "SCHEDULED":
             return None                                         # already handled; waiting for a reply
 
         if d <= today:                                          # too late to ask: move to the next cycle
@@ -236,12 +319,27 @@ def _remind(engine: Engine, now: dt.datetime, today: dt.date, sender: MessageSen
                         sub.next_delivery_date)
             return "missed"
 
-        occ = DeliveryOccurrence(subscription_id=sid, scheduled_date=d, status="SCHEDULED")
-        s.add(occ)
-        s.flush()
-        return _settle_or_remind(s, sub, occ, now, today, sender)
+        if occ is None:
+            occ = DeliveryOccurrence(subscription_id=sid, scheduled_date=d, status="SCHEDULED")
+            s.add(occ)
+            s.flush()
+        return _settle_or_remind(s, sub, occ, now, today)
 
-    _each(engine, list(ids), remind_subscription, summary)
+    def notify_subscription(sid, outcome):
+        if outcome not in ("reminded", "out_of_stock"):
+            return
+        with Session(engine) as s:
+            expected_status = "NOTIFIED" if outcome == "reminded" else "OUT_OF_STOCK"
+            occurrence_id = s.scalar(
+                select(DeliveryOccurrence.occurrence_id)
+                .where(DeliveryOccurrence.subscription_id == sid, DeliveryOccurrence.status == expected_status)
+                .order_by(DeliveryOccurrence.scheduled_date.desc())
+                .limit(1)
+            )
+        if occurrence_id is not None:
+            _notify_occurrence(engine, sender, occurrence_id, outcome)
+
+    _each(engine, list(ids), remind_subscription, summary, after_commit=notify_subscription)
 
 
 # --------------------------------------------------------------------------- #
