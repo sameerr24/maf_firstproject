@@ -64,7 +64,7 @@ def make_engine(url: URL | str | None = None, *, search_path: str | None = None,
     override pool sizing through kwargs when a dedicated database needs more capacity.
     """
     url = make_url(url) if url is not None else get_database_url()
-    kwargs.setdefault("pool_size", 2)
+    kwargs.setdefault("pool_size", 1)
     kwargs.setdefault("max_overflow", 0)
     connect_args = kwargs.pop("connect_args", {})
     connect_args.setdefault("connect_timeout", 10)
